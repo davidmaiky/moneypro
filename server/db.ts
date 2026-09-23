@@ -12,7 +12,7 @@ export interface PaidInvoiceRecord {
   amount: number;
 }
 
-const dataDir = path.resolve(process.cwd(), 'data');
+const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
@@ -582,3 +582,15 @@ export function importFullBackup(data: {
   importTx();
   return getBootstrapData();
 }
+
+export function closeDatabase() {
+  try {
+    if (db && db.open) {
+      db.close();
+      console.log('SQLite database closed successfully.');
+    }
+  } catch (error) {
+    console.error('Error closing SQLite database:', error);
+  }
+}
+

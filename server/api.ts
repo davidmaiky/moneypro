@@ -17,10 +17,21 @@ import {
   clearDatabase,
   getAllCategories,
   getAllAccounts,
+  closeDatabase,
 } from './db';
 import { INITIAL_CATEGORIES } from '../src/data/initialData';
 
 export const apiRouter = Router();
+
+// Health check endpoint for Easypanel, Docker and status monitoring
+apiRouter.get('/health', (_req: Request, res: Response) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'finanflow-api',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
 
 // 1. Bootstrap
 apiRouter.get('/bootstrap', (_req: Request, res: Response) => {

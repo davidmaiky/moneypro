@@ -1,0 +1,28 @@
+services:
+  moneypro:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: moneypro:latest
+    container_name: moneypro
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATA_DIR=/app/data
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - APP_URL=${APP_URL:-}
+    volumes:
+      - moneypro-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  moneypro-data:
+    driver: local

@@ -1,0 +1,33 @@
+{
+  "name": "moneypro",
+  "description": "FinanFlow (MoneyPro) - Sistema de Gestão Financeira Pessoal com SQLite e PWA",
+  "services": [
+    {
+      "type": "app",
+      "data": {
+        "serviceName": "finanflow",
+        "build": {
+          "type": "git",
+          "dockerfilePath": "Dockerfile"
+        },
+        "env": "NODE_ENV=production\nPORT=3000\nDATA_DIR=/app/data\nGEMINI_API_KEY=\nAPP_URL=",
+        "ports": [
+          {
+            "published": 3000,
+            "target": 3000
+          }
+        ],
+        "mounts": [
+          {
+            "type": "volume",
+            "name": "data",
+            "mountPath": "/app/data"
+          }
+        ],
+        "healthCheck": {
+          "path": "/health"
+        }
+      }
+    }
+  ]
+}
