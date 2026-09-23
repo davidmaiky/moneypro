@@ -1,0 +1,6 @@
+{
+  "name": "FinanFlow - Controle Financeiro & Cartões",
+  "description": "Sistema completo de controle financeiro pessoal, gestão de faturas e compras parceladas de cartão de crédito, gráficos interativos e exportação de relatórios em PDF.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

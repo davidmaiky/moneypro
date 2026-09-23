@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* Privacy Mode (Ocultar Valores em Ambientes Públicos) */
+.privacy-active .font-mono:not(button):not(input):not(select):not(.privacy-ignore),
+.privacy-active .privacy-sensitive,
+.privacy-active [data-privacy="true"] {
+  filter: blur(6px);
+  user-select: none;
+  transition: filter 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.privacy-active .font-mono:not(button):not(input):not(select):not(.privacy-ignore):hover,
+.privacy-active .privacy-sensitive:hover,
+.privacy-active [data-privacy="true"]:hover {
+  filter: blur(0px);
+}
+
+
