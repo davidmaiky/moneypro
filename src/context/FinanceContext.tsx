@@ -1,11 +1,12 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { Account, Category, CreditCard, RecurringTransaction, Transaction } from '../types/finance';
 import { INITIAL_ACCOUNTS, INITIAL_CARDS, INITIAL_CATEGORIES, getInitialTransactions } from '../data/initialData';
-import { createInstallmentTransactions, calculateInvoiceMonth } from '../utils/creditCardUtils';
+import { createInstallmentTransactions } from '../utils/creditCardUtils';
 import { getCurrentMonthString } from '../utils/formatters';
 import { buildTransactionFromRecurring } from '../utils/recurringUtils';
+import { api, BootstrapResponse } from '../services/api';
 
-interface PaidInvoiceRecord {
+export interface PaidInvoiceRecord {
   cardId: string;
   invoiceMonth: string;
   paidAt: string;
@@ -13,7 +14,7 @@ interface PaidInvoiceRecord {
   amount: number;
 }
 
-interface FinanceContextType {
+export interface FinanceContextType {
   accounts: Account[];
   cards: CreditCard[];
   categories: Category[];
@@ -22,6 +23,8 @@ interface FinanceContextType {
   paidInvoices: PaidInvoiceRecord[];
   selectedMonth: string;
   setSelectedMonth: (month: string) => void;
+  isDbConnected: boolean;
+  isLoading: boolean;
   
   // Transactions
   addTransaction: (tx: Omit<Transaction, 'id' | 'createdAt'>) => void;
@@ -123,6 +126,8 @@ try {
 
 export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [selectedMonth, setSelectedMonth] = useState<string>(() => getCurrentMonthString());
+  const [isDbConnected, setIsDbConnected] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
   // Load accounts
   const [accounts, setAccounts] = useState<Account[]>(() => {
@@ -184,7 +189,82 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   });
 
-  // Persist state updates to localStorage
+  // Load from SQLite Database on mount with automatic localStorage migration
+  useEffect(() => {
+    let isMounted = true;
+
+    async function bootstrap() {
+      try {
+        const data: BootstrapResponse = await api.getBootstrap();
+        if (!isMounted) return;
+
+        const dbIsEmpty =
+          data.accounts.length === 0 &&
+          data.cards.length === 0 &&
+          data.transactions.length === 0;
+
+        const storedAccounts = localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
+        const storedCards = localStorage.getItem(STORAGE_KEYS.CARDS);
+        const storedTxs = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
+
+        const hasLocalData =
+          (storedAccounts && JSON.parse(storedAccounts).length > 0) ||
+          (storedCards && JSON.parse(storedCards).length > 0) ||
+          (storedTxs && JSON.parse(storedTxs).length > 0);
+
+        if (dbIsEmpty && hasLocalData) {
+          // Automatic migration from localStorage to SQLite
+          const localData = {
+            accounts: storedAccounts ? JSON.parse(storedAccounts) : [],
+            cards: storedCards ? JSON.parse(storedCards) : [],
+            categories: localStorage.getItem(STORAGE_KEYS.CATEGORIES)
+              ? JSON.parse(localStorage.getItem(STORAGE_KEYS.CATEGORIES)!)
+              : data.categories,
+            transactions: storedTxs ? JSON.parse(storedTxs) : [],
+            recurring: localStorage.getItem(STORAGE_KEYS.RECURRING)
+              ? JSON.parse(localStorage.getItem(STORAGE_KEYS.RECURRING)!)
+              : [],
+            paidInvoices: localStorage.getItem(STORAGE_KEYS.PAID_INVOICES)
+              ? JSON.parse(localStorage.getItem(STORAGE_KEYS.PAID_INVOICES)!)
+              : [],
+          };
+
+          const imported = await api.importBackup(localData, 'replace');
+          if (isMounted && imported.data) {
+            setAccounts(imported.data.accounts);
+            setCards(imported.data.cards);
+            setCategories(imported.data.categories);
+            setTransactions(imported.data.transactions);
+            setRecurringTransactions(imported.data.recurringTransactions);
+            setPaidInvoices(imported.data.paidInvoices);
+            setIsDbConnected(true);
+          }
+        } else {
+          // Populate from Database
+          setAccounts(data.accounts);
+          setCards(data.cards);
+          setCategories(data.categories.length > 0 ? data.categories : INITIAL_CATEGORIES);
+          setTransactions(data.transactions);
+          setRecurringTransactions(data.recurringTransactions);
+          setPaidInvoices(data.paidInvoices);
+          setIsDbConnected(true);
+        }
+      } catch (err) {
+        console.warn('Backend SQLite indisponível, usando armazenamento local offline:', err);
+        setIsDbConnected(false);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    }
+
+    bootstrap();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Persist state updates to localStorage (offline cache fallback)
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
   }, [accounts]);
@@ -218,6 +298,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
 
     setTransactions(prev => [newTx, ...prev]);
+    api.saveTransaction(newTx).catch(err => console.error('Erro ao salvar transação no banco:', err));
 
     // Update account balance if it's directly tied to an account
     if (newTx.paymentMethod === 'account' && newTx.accountId) {
@@ -225,7 +306,9 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         prevAccounts.map(acc => {
           if (acc.id === newTx.accountId) {
             const diff = newTx.type === 'income' ? newTx.amount : -newTx.amount;
-            return { ...acc, balance: Number((acc.balance + diff).toFixed(2)) };
+            const updatedAcc = { ...acc, balance: Number((acc.balance + diff).toFixed(2)) };
+            api.saveAccount(updatedAcc).catch(err => console.error('Erro ao atualizar saldo no banco:', err));
+            return updatedAcc;
           }
           return acc;
         })
@@ -256,11 +339,16 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         addTransaction(txData);
 
         // Mark month as generated
-        return prevRecurring.map(r =>
-          r.id === recurringId
-            ? { ...r, generatedMonths: [...(r.generatedMonths || []), targetMonth] }
-            : r
-        );
+        const updatedList = prevRecurring.map(r => {
+          if (r.id === recurringId) {
+            const updated = { ...r, generatedMonths: [...(r.generatedMonths || []), targetMonth] };
+            api.saveRecurring(updated).catch(err => console.error('Erro ao atualizar regra recorrente no banco:', err));
+            return updated;
+          }
+          return r;
+        });
+
+        return updatedList;
       });
     },
     [cards]
@@ -311,12 +399,20 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     setTransactions(prev => [...newTxs, ...prev]);
+    api.saveTransactionsBatch(newTxs).catch(err => console.error('Erro ao salvar parcelas no banco:', err));
   };
 
   // Update transaction
   const updateTransaction = (id: string, updates: Partial<Transaction>) => {
     setTransactions(prev =>
-      prev.map(t => (t.id === id ? { ...t, ...updates } : t))
+      prev.map(t => {
+        if (t.id === id) {
+          const updated = { ...t, ...updates };
+          api.saveTransaction(updated).catch(err => console.error('Erro ao atualizar transação no banco:', err));
+          return updated;
+        }
+        return t;
+      })
     );
   };
 
@@ -328,8 +424,10 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (deleteEntireSeries && target.installments?.parentTransactionId) {
       const parentId = target.installments.parentTransactionId;
       setTransactions(prev => prev.filter(t => t.installments?.parentTransactionId !== parentId));
+      api.deleteTransaction(id, true).catch(err => console.error('Erro ao excluir série de transações no banco:', err));
     } else {
       setTransactions(prev => prev.filter(t => t.id !== id));
+      api.deleteTransaction(id, false).catch(err => console.error('Erro ao excluir transação no banco:', err));
     }
 
     // Revert account balance if applicable
@@ -338,7 +436,9 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         prevAccounts.map(acc => {
           if (acc.id === target.accountId) {
             const revertDiff = target.type === 'income' ? -target.amount : target.amount;
-            return { ...acc, balance: Number((acc.balance + revertDiff).toFixed(2)) };
+            const updatedAcc = { ...acc, balance: Number((acc.balance + revertDiff).toFixed(2)) };
+            api.saveAccount(updatedAcc).catch(err => console.error('Erro ao reverter saldo no banco:', err));
+            return updatedAcc;
           }
           return acc;
         })
@@ -351,10 +451,12 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setRecurringTransactions(prev =>
         prev.map(r => {
           if (r.id === target.recurringId) {
-            return {
+            const updated = {
               ...r,
               generatedMonths: (r.generatedMonths || []).filter(m => m !== targetMonth),
             };
+            api.saveRecurring(updated).catch(err => console.error('Erro ao atualizar regra recorrente:', err));
+            return updated;
           }
           return r;
         })
@@ -373,21 +475,37 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       generatedMonths: [],
     };
     setRecurringTransactions(prev => [...prev, newRecurring]);
+    api.saveRecurring(newRecurring).catch(err => console.error('Erro ao salvar regra recorrente no banco:', err));
   };
 
   const updateRecurringTransaction = (id: string, updates: Partial<RecurringTransaction>) => {
     setRecurringTransactions(prev =>
-      prev.map(r => (r.id === id ? { ...r, ...updates } : r))
+      prev.map(r => {
+        if (r.id === id) {
+          const updated = { ...r, ...updates };
+          api.saveRecurring(updated).catch(err => console.error('Erro ao atualizar regra recorrente no banco:', err));
+          return updated;
+        }
+        return r;
+      })
     );
   };
 
   const deleteRecurringTransaction = (id: string) => {
     setRecurringTransactions(prev => prev.filter(r => r.id !== id));
+    api.deleteRecurring(id).catch(err => console.error('Erro ao excluir regra recorrente no banco:', err));
   };
 
   const toggleRecurringActive = (id: string) => {
     setRecurringTransactions(prev =>
-      prev.map(r => (r.id === id ? { ...r, active: !r.active } : r))
+      prev.map(r => {
+        if (r.id === id) {
+          const updated = { ...r, active: !r.active };
+          api.saveRecurring(updated).catch(err => console.error('Erro ao alternar status de regra recorrente:', err));
+          return updated;
+        }
+        return r;
+      })
     );
   };
 
@@ -398,16 +516,27 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       id: `card_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     };
     setCards(prev => [...prev, newCard]);
+    api.saveCard(newCard).catch(err => console.error('Erro ao salvar cartão no banco:', err));
   };
 
   // Update credit card
   const updateCreditCard = (id: string, updates: Partial<CreditCard>) => {
-    setCards(prev => prev.map(c => (c.id === id ? { ...c, ...updates } : c)));
+    setCards(prev =>
+      prev.map(c => {
+        if (c.id === id) {
+          const updated = { ...c, ...updates };
+          api.saveCard(updated).catch(err => console.error('Erro ao atualizar cartão no banco:', err));
+          return updated;
+        }
+        return c;
+      })
+    );
   };
 
   // Delete credit card
   const deleteCreditCard = (id: string) => {
     setCards(prev => prev.filter(c => c.id !== id));
+    api.deleteCard(id).catch(err => console.error('Erro ao excluir cartão no banco:', err));
   };
 
   // Add account
@@ -417,16 +546,27 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       id: `acc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     };
     setAccounts(prev => [...prev, newAccount]);
+    api.saveAccount(newAccount).catch(err => console.error('Erro ao salvar conta no banco:', err));
   };
 
   // Update account
   const updateAccount = (id: string, updates: Partial<Account>) => {
-    setAccounts(prev => prev.map(a => (a.id === id ? { ...a, ...updates } : a)));
+    setAccounts(prev =>
+      prev.map(a => {
+        if (a.id === id) {
+          const updated = { ...a, ...updates };
+          api.saveAccount(updated).catch(err => console.error('Erro ao atualizar conta no banco:', err));
+          return updated;
+        }
+        return a;
+      })
+    );
   };
 
   // Delete account
   const deleteAccount = (id: string) => {
     setAccounts(prev => prev.filter(a => a.id !== id));
+    api.deleteAccount(id).catch(err => console.error('Erro ao excluir conta no banco:', err));
   };
 
   // Category CRUD
@@ -436,11 +576,21 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       id: `cat_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     };
     setCategories(prev => [...prev, newCategory]);
+    api.saveCategory(newCategory).catch(err => console.error('Erro ao salvar categoria no banco:', err));
     return newCategory;
   };
 
   const updateCategory = (id: string, updates: Partial<Category>) => {
-    setCategories(prev => prev.map(c => (c.id === id ? { ...c, ...updates } : c)));
+    setCategories(prev =>
+      prev.map(c => {
+        if (c.id === id) {
+          const updated = { ...c, ...updates };
+          api.saveCategory(updated).catch(err => console.error('Erro ao atualizar categoria no banco:', err));
+          return updated;
+        }
+        return c;
+      })
+    );
   };
 
   const deleteCategory = (id: string, reassignToCategoryId?: string): { success: boolean; message: string } => {
@@ -456,7 +606,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return { success: false, message: 'Categoria não encontrada.' };
     }
 
-    // Determine target category to reassign to (if not explicitly given, pick a default category of matching type)
+    // Determine target category to reassign to
     let fallbackId = reassignToCategoryId;
     if (!fallbackId) {
       const defaultFallback = categories.find(c => c.id !== id && c.type === categoryToDelete.type);
@@ -476,6 +626,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     // Remove category
     setCategories(prev => prev.filter(c => c.id !== id));
 
+    api.deleteCategory(id, fallbackId).catch(err => console.error('Erro ao excluir categoria no banco:', err));
+
     return {
       success: true,
       message: `Categoria "${categoryToDelete.name}" excluída com sucesso.`,
@@ -485,19 +637,24 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Update Category Budget
   const updateCategoryBudget = (categoryId: string, budget: number) => {
     setCategories(prev =>
-      prev.map(c => (c.id === categoryId ? { ...c, budgetMonthly: budget } : c))
+      prev.map(c => {
+        if (c.id === categoryId) {
+          const updated = { ...c, budgetMonthly: budget };
+          api.saveCategory(updated).catch(err => console.error('Erro ao atualizar orçamento no banco:', err));
+          return updated;
+        }
+        return c;
+      })
     );
   };
 
   // Reset Categories to default list
   const resetCategoriesToDefault = () => {
     setCategories(INITIAL_CATEGORIES);
+    api.resetCategoriesToDefault().catch(err => console.error('Erro ao restaurar categorias padrão no banco:', err));
   };
 
-  // Pay credit card invoice:
-  // 1. Records paid invoice
-  // 2. Debits from chosen account
-  // 3. Creates an expense transaction in the bank account log
+  // Pay credit card invoice
   const payInvoice = (cardId: string, invoiceMonth: string, accountId: string) => {
     const card = cards.find(c => c.id === cardId);
     const account = accounts.find(a => a.id === accountId);
@@ -520,20 +677,17 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
 
     setPaidInvoices(prev => {
-      // Remove any existing record for this card and month, then append
       const filtered = prev.filter(p => !(p.cardId === cardId && p.invoiceMonth === invoiceMonth));
       return [...filtered, record];
     });
 
+    api.payInvoice(record).catch(err => console.error('Erro ao salvar fatura paga no banco:', err));
+
     // Debit the account
-    setAccounts(prev =>
-      prev.map(acc => {
-        if (acc.id === accountId) {
-          return { ...acc, balance: Number((acc.balance - invoiceTotal).toFixed(2)) };
-        }
-        return acc;
-      })
-    );
+    const newBalance = Number((account.balance - invoiceTotal).toFixed(2));
+    const updatedAccount = { ...account, balance: newBalance };
+    setAccounts(prev => prev.map(acc => (acc.id === accountId ? updatedAccount : acc)));
+    api.saveAccount(updatedAccount).catch(err => console.error('Erro ao atualizar saldo no banco:', err));
 
     // Create a corresponding bank expense transaction for clarity
     const bankExpenseTx: Transaction = {
@@ -551,9 +705,10 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
 
     setTransactions(prev => [bankExpenseTx, ...prev]);
+    api.saveTransaction(bankExpenseTx).catch(err => console.error('Erro ao salvar transação de fatura no banco:', err));
   };
 
-  // Anticipate and Amortize Installments (Nubank style with discount)
+  // Anticipate and Amortize Installments
   const anticipateInstallments = (params: {
     parentTransactionId: string;
     installmentsToAnticipateCount: number;
@@ -562,7 +717,6 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     targetInvoiceMonth?: string;
     accountId?: string;
   }): { success: boolean; message: string } => {
-    // 1. Find all transactions in this installment series
     const seriesTxs = transactions.filter(
       t => t.installments?.parentTransactionId === params.parentTransactionId
     );
@@ -571,7 +725,6 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return { success: false, message: 'Parcelamento não encontrado.' };
     }
 
-    // 2. Identify unpaid installments
     const unpaidTxs = seriesTxs.filter(t => {
       if (!t.invoiceMonth || !t.creditCardId) return true;
       return !paidInvoices.some(p => p.cardId === t.creditCardId && p.invoiceMonth === t.invoiceMonth);
@@ -581,10 +734,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return { success: false, message: 'Não há parcelas pendentes para antecipar.' };
     }
 
-    // Sort by installment number ascending
     unpaidTxs.sort((a, b) => (a.installments?.current || 0) - (b.installments?.current || 0));
 
-    // Choose the last N installments (Nubank style gives highest discount on furthest installments)
     const count = Math.min(Math.max(1, params.installmentsToAnticipateCount), unpaidTxs.length);
     const targetTxs = unpaidTxs.slice(unpaidTxs.length - count);
     const targetIds = new Set(targetTxs.map(t => t.id));
@@ -619,15 +770,18 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         createdAt: now,
       };
 
-      // Remove anticipated future installments, add consolidated discounted invoice transaction
       setTransactions(prev => [newTx, ...prev.filter(t => !targetIds.has(t.id))]);
+
+      api.saveTransaction(newTx).catch(err => console.error('Erro ao salvar transação de antecipação:', err));
+      targetTxs.forEach(t => {
+        api.deleteTransaction(t.id).catch(err => console.error('Erro ao remover parcela antecipada:', err));
+      });
 
       return {
         success: true,
         message: `${count} parcela(s) antecipada(s) para a fatura de ${invoiceMonth} com R$ ${discount.toFixed(2)} de desconto!`,
       };
     } else {
-      // Direct payment from bank account
       const accountId = params.accountId || accounts[0]?.id;
       const account = accounts.find(a => a.id === accountId);
       if (!account) {
@@ -648,18 +802,17 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         createdAt: now,
       };
 
-      // Remove anticipated future installments from card
       setTransactions(prev => [newTx, ...prev.filter(t => !targetIds.has(t.id))]);
 
-      // Deduct from bank account balance
-      setAccounts(prev =>
-        prev.map(acc => {
-          if (acc.id === account.id) {
-            return { ...acc, balance: Number((acc.balance - netAmount).toFixed(2)) };
-          }
-          return acc;
-        })
-      );
+      const newBalance = Number((account.balance - netAmount).toFixed(2));
+      const updatedAccount = { ...account, balance: newBalance };
+      setAccounts(prev => prev.map(acc => (acc.id === account.id ? updatedAccount : acc)));
+
+      api.saveTransaction(newTx).catch(err => console.error('Erro ao salvar quitação:', err));
+      api.saveAccount(updatedAccount).catch(err => console.error('Erro ao debitar conta:', err));
+      targetTxs.forEach(t => {
+        api.deleteTransaction(t.id).catch(err => console.error('Erro ao remover parcela quitada:', err));
+      });
 
       return {
         success: true,
@@ -668,7 +821,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  // Reset to initial clean state (no demo data)
+  // Reset to initial clean state
   const resetToDemoData = () => {
     setAccounts(INITIAL_ACCOUNTS);
     setCards(INITIAL_CARDS);
@@ -682,6 +835,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } catch {
       // ignore
     }
+    api.clearDatabase().catch(err => console.error('Erro ao limpar banco de dados:', err));
   };
 
   // Clear all data
@@ -696,6 +850,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } catch {
       // ignore
     }
+    api.clearDatabase().catch(err => console.error('Erro ao limpar banco de dados:', err));
   };
 
   // Privacy Mode (Ocultar Valores)
@@ -800,6 +955,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         } catch {
           // ignore
         }
+
+        api.importBackup(data, 'replace').catch(err => console.error('Erro ao importar backup no banco:', err));
       } else {
         const mergeById = <T extends { id: string }>(currentList: T[], incomingList: T[]): T[] => {
           const map = new Map<string, T>();
@@ -842,11 +999,23 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         } catch {
           // ignore
         }
+
+        api.importBackup(
+          {
+            accounts: mergedAccounts,
+            cards: mergedCards,
+            categories: mergedCategories,
+            transactions: mergedTransactions,
+            recurring: mergedRecurring,
+            paidInvoices: mergedInvoices,
+          },
+          'replace'
+        ).catch(err => console.error('Erro ao mesclar backup no banco:', err));
       }
 
       return {
         success: true,
-        message: 'Backup restaurado com sucesso!',
+        message: 'Backup restaurado com sucesso no banco de dados e localmente!',
         summary: {
           accounts: incomingAccounts.length,
           cards: incomingCards.length,
@@ -874,6 +1043,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       paidInvoices,
       selectedMonth,
       setSelectedMonth,
+      isDbConnected,
+      isLoading,
       addTransaction,
       addCreditCardPurchase,
       updateTransaction,
@@ -911,6 +1082,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       recurringTransactions,
       paidInvoices,
       selectedMonth,
+      isDbConnected,
+      isLoading,
       processRecurringForMonth,
       isPrivacyMode,
     ]

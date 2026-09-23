@@ -5,6 +5,7 @@ import {
   FileDown,
   Eye,
   EyeOff,
+  Database,
 } from 'lucide-react';
 import { useFinance } from '../../context/FinanceContext';
 import { ActiveTab } from './Header';
@@ -58,6 +59,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   const {
     isPrivacyMode,
     togglePrivacyMode,
+    isDbConnected,
   } = useFinance();
 
   const pageInfo = TAB_TITLES[activeTab] || {
@@ -102,6 +104,23 @@ export const TopBar: React.FC<TopBarProps> = ({
 
           {/* Right Section: Actions */}
           <div className="flex items-center gap-2 sm:gap-2.5">
+            {/* Database Status Badge */}
+            <div
+              className={`hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                isDbConnected
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60'
+                  : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60'
+              }`}
+              title={
+                isDbConnected
+                  ? 'Banco de Dados SQLite conectado e persistindo dados em disco'
+                  : 'Modo Local / Offline'
+              }
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span className="text-[11px] font-semibold">{isDbConnected ? 'SQLite Conectado' : 'Offline'}</span>
+            </div>
+
             {/* Privacy Mode Toggle */}
             <button
               type="button"
