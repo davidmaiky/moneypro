@@ -1,4 +1,5 @@
 import { Account, Category, CreditCard, RecurringTransaction, Transaction } from '../types/finance';
+import { User, AuditLog, RoleDefinition, PermissionGroup } from '../types/user';
 
 export interface BootstrapResponse {
   accounts: Account[];
@@ -155,6 +156,59 @@ export const api = {
   async clearDatabase(): Promise<{ success: boolean; data: BootstrapResponse }> {
     return request('/api/backup/clear', {
       method: 'POST',
+    });
+  },
+
+  // Users & Permissions (RBAC) CRUD
+  async getUsers(): Promise<{
+    success: boolean;
+    users: User[];
+    roles: Record<string, RoleDefinition>;
+    permissionGroups: PermissionGroup[];
+  }> {
+    return request('/api/users');
+  },
+
+  async getUser(id: string): Promise<{ success: boolean; user: User }> {
+    return request(`/api/users/${id}`);
+  },
+
+  async saveUser(user: Partial<User>): Promise<{ success: boolean; user: User }> {
+    return request('/api/users', {
+      method: 'POST',
+      body: JSON.stringify(user),
+    });
+  },
+
+  async updateUserStatus(id: string, status: 'active' | 'inactive' | 'pending'): Promise<{
+    success: boolean;
+    id: string;
+    status: string;
+  }> {
+    return request(`/api/users/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+  },
+
+  async deleteUser(id: string): Promise<{ success: boolean }> {
+    return request(`/api/users/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async getAuditLogs(): Promise<{ success: boolean; logs: AuditLog[] }> {
+    return request('/api/audit-logs');
+  },
+
+  async inviteUser(email: string, role: string, department?: string): Promise<{
+    success: boolean;
+    message: string;
+    inviteLink: string;
+  }> {
+    return request('/api/users/invite', {
+      method: 'POST',
+      body: JSON.stringify({ email, role, department }),
     });
   },
 };

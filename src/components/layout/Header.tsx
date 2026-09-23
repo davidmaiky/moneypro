@@ -5,7 +5,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { addMonthsToMonthString, formatMonthYear } from '../../utils/formatters';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 
-export type ActiveTab = 'dashboard' | 'transactions' | 'cards' | 'recurring' | 'categories' | 'forecast' | 'reports';
+export type ActiveTab = 'dashboard' | 'transactions' | 'cards' | 'recurring' | 'categories' | 'forecast' | 'reports' | 'users';
 
 interface HeaderProps {
   activeTab: ActiveTab;
@@ -155,6 +155,16 @@ export const Header: React.FC<HeaderProps> = ({
               }`}
             >
               Relatórios PDF
+            </button>
+            <button
+              onClick={() => setActiveTab('users')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                activeTab === 'users'
+                  ? 'bg-emerald-50 text-emerald-700 dark:bg-slate-800 dark:text-emerald-400 font-semibold shadow-xs dark:shadow-none'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-800/50'
+              }`}
+            >
+              Usuários & Acesso
             </button>
           </nav>
 
@@ -314,6 +324,16 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             Relatórios
+          </button>
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`px-2.5 py-1 text-xs rounded-md whitespace-nowrap ${
+              activeTab === 'users'
+                ? 'bg-emerald-50 text-emerald-700 dark:bg-slate-800 dark:text-emerald-400 font-semibold'
+                : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            Usuários
           </button>
           {/* Mobile month toggle */}
           <div className="flex sm:hidden items-center bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-[11px] gap-1 shrink-0 text-slate-700 dark:text-slate-200">

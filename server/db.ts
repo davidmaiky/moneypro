@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { Account, Category, CreditCard, RecurringTransaction, Transaction } from '../src/types/finance';
 import { INITIAL_CATEGORIES } from '../src/data/initialData';
+import { User, AuditLog, ALL_PERMISSION_IDS, ROLE_DEFINITIONS } from '../src/types/user';
 
 export interface PaidInvoiceRecord {
   cardId: string;
@@ -110,6 +111,36 @@ export function initDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(card_id, invoice_month)
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL,
+      custom_role_name TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      department TEXT NOT NULL,
+      phone TEXT,
+      avatar_color TEXT NOT NULL DEFAULT '#10b981',
+      two_factor_enabled INTEGER NOT NULL DEFAULT 0,
+      permissions TEXT NOT NULL DEFAULT '[]',
+      last_login TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      user_name TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target TEXT NOT NULL,
+      details TEXT NOT NULL,
+      ip_address TEXT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
   `);
 
   // Seed default categories if empty
@@ -132,6 +163,126 @@ export function initDatabase() {
       }
     });
     insertMany(INITIAL_CATEGORIES);
+  }
+
+  // Seed default users if empty
+  const userCountRow = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
+  if (userCountRow.count === 0) {
+    const defaultUsers: User[] = [
+      {
+        id: 'usr_admin_01',
+        name: 'David Maiky',
+        email: 'david@empresa.com',
+        role: 'admin',
+        status: 'active',
+        department: 'Diretoria & Tecnologia',
+        phone: '(11) 98765-4321',
+        avatarColor: '#8b5cf6',
+        twoFactorEnabled: true,
+        permissions: ALL_PERMISSION_IDS,
+        lastLogin: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        notes: 'Administrador geral do sistema com privilégios totais de gestão e segurança.',
+      },
+      {
+        id: 'usr_mgr_02',
+        name: 'Mariana Souza',
+        email: 'mariana.souza@empresa.com',
+        role: 'manager',
+        status: 'active',
+        department: 'Controladoria & Finanças',
+        phone: '(11) 97123-4567',
+        avatarColor: '#3b82f6',
+        twoFactorEnabled: true,
+        permissions: ROLE_DEFINITIONS.manager.defaultPermissions,
+        lastLogin: new Date(Date.now() - 3600000 * 4).toISOString(),
+        createdAt: new Date(Date.now() - 86400000 * 30).toISOString(),
+        notes: 'Responsável pelo fechamento mensal, faturas de cartões e orçamentos.',
+      },
+      {
+        id: 'usr_ana_03',
+        name: 'Carlos Eduardo',
+        email: 'carlos.eduardo@empresa.com',
+        role: 'analyst',
+        status: 'active',
+        department: 'Contabilidade & Operações',
+        phone: '(21) 99888-1234',
+        avatarColor: '#10b981',
+        twoFactorEnabled: false,
+        permissions: ROLE_DEFINITIONS.analyst.defaultPermissions,
+        lastLogin: new Date(Date.now() - 3600000 * 18).toISOString(),
+        createdAt: new Date(Date.now() - 86400000 * 15).toISOString(),
+        notes: 'Analista de conciliação bancária e lançamento de despesas.',
+      },
+      {
+        id: 'usr_view_04',
+        name: 'Beatriz Lima',
+        email: 'beatriz.lima@empresa.com',
+        role: 'viewer',
+        status: 'active',
+        department: 'Compliance & Auditoria',
+        phone: '(31) 98456-7890',
+        avatarColor: '#64748b',
+        twoFactorEnabled: true,
+        permissions: ROLE_DEFINITIONS.viewer.defaultPermissions,
+        lastLogin: new Date(Date.now() - 3600000 * 48).toISOString(),
+        createdAt: new Date(Date.now() - 86400000 * 45).toISOString(),
+        notes: 'Auditora fiscal com acesso exclusivo de leitura de demonstrativos e relatórios.',
+      },
+      {
+        id: 'usr_pend_05',
+        name: 'Lucas Andrade',
+        email: 'lucas.andrade@empresa.com',
+        role: 'analyst',
+        status: 'pending',
+        department: 'Financeiro',
+        phone: '(41) 99123-9988',
+        avatarColor: '#f59e0b',
+        twoFactorEnabled: false,
+        permissions: ROLE_DEFINITIONS.analyst.defaultPermissions,
+        lastLogin: undefined,
+        createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
+        notes: 'Convite enviado aguardando primeiro login e ativação de credencial.',
+      },
+    ];
+
+    const insertUserStmt = db.prepare(`
+      INSERT INTO users (id, name, email, role, custom_role_name, status, department, phone, avatar_color, two_factor_enabled, permissions, last_login, notes, created_at)
+      VALUES (@id, @name, @email, @role, @customRoleName, @status, @department, @phone, @avatarColor, @twoFactorEnabled, @permissions, @lastLogin, @notes, @createdAt)
+    `);
+
+    for (const u of defaultUsers) {
+      insertUserStmt.run({
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        customRoleName: u.customRoleName || null,
+        status: u.status,
+        department: u.department,
+        phone: u.phone || null,
+        avatarColor: u.avatarColor,
+        twoFactorEnabled: u.twoFactorEnabled ? 1 : 0,
+        permissions: JSON.stringify(u.permissions),
+        lastLogin: u.lastLogin || null,
+        notes: u.notes || null,
+        createdAt: u.createdAt,
+      });
+    }
+
+    const insertAuditStmt = db.prepare(`
+      INSERT INTO audit_logs (id, user_name, action, target, details, ip_address, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertAuditStmt.run(
+      'log_init_01',
+      'Sistema FinanFlow',
+      'create',
+      'Permissões & Usuários',
+      'Inicialização do módulo de controle de acesso (RBAC) com usuários padrão',
+      '127.0.0.1',
+      new Date().toISOString()
+    );
   }
 }
 
@@ -581,6 +732,172 @@ export function importFullBackup(data: {
 
   importTx();
   return getBootstrapData();
+}
+
+// --- Users & Access Operations ---
+export function getAllUsers(): User[] {
+  const rows = db.prepare(`
+    SELECT id, name, email, role, custom_role_name as customRoleName, status,
+           department, phone, avatar_color as avatarColor, two_factor_enabled as twoFactorEnabled,
+           permissions, last_login as lastLogin, notes, created_at as createdAt
+    FROM users
+    ORDER BY
+      CASE role
+        WHEN 'admin' THEN 1
+        WHEN 'manager' THEN 2
+        WHEN 'analyst' THEN 3
+        WHEN 'viewer' THEN 4
+        ELSE 5
+      END,
+      name ASC
+  `).all() as any[];
+
+  return rows.map(r => ({
+    id: r.id,
+    name: r.name,
+    email: r.email,
+    role: r.role,
+    customRoleName: r.customRoleName || undefined,
+    status: r.status,
+    department: r.department,
+    phone: r.phone || undefined,
+    avatarColor: r.avatarColor || '#10b981',
+    twoFactorEnabled: Boolean(r.twoFactorEnabled),
+    permissions: typeof r.permissions === 'string' ? JSON.parse(r.permissions) : (r.permissions || []),
+    lastLogin: r.lastLogin || undefined,
+    notes: r.notes || undefined,
+    createdAt: r.createdAt,
+  }));
+}
+
+export function getUserById(id: string): User | undefined {
+  const r = db.prepare(`
+    SELECT id, name, email, role, custom_role_name as customRoleName, status,
+           department, phone, avatar_color as avatarColor, two_factor_enabled as twoFactorEnabled,
+           permissions, last_login as lastLogin, notes, created_at as createdAt
+    FROM users WHERE id = ?
+  `).get(id) as any;
+
+  if (!r) return undefined;
+
+  return {
+    id: r.id,
+    name: r.name,
+    email: r.email,
+    role: r.role,
+    customRoleName: r.customRoleName || undefined,
+    status: r.status,
+    department: r.department,
+    phone: r.phone || undefined,
+    avatarColor: r.avatarColor || '#10b981',
+    twoFactorEnabled: Boolean(r.twoFactorEnabled),
+    permissions: typeof r.permissions === 'string' ? JSON.parse(r.permissions) : (r.permissions || []),
+    lastLogin: r.lastLogin || undefined,
+    notes: r.notes || undefined,
+    createdAt: r.createdAt,
+  };
+}
+
+export function saveUser(user: User): void {
+  const stmt = db.prepare(`
+    INSERT INTO users (
+      id, name, email, role, custom_role_name, status, department, phone,
+      avatar_color, two_factor_enabled, permissions, last_login, notes, created_at
+    )
+    VALUES (
+      @id, @name, @email, @role, @customRoleName, @status, @department, @phone,
+      @avatarColor, @twoFactorEnabled, @permissions, @lastLogin, @notes, @createdAt
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      email = excluded.email,
+      role = excluded.role,
+      custom_role_name = excluded.custom_role_name,
+      status = excluded.status,
+      department = excluded.department,
+      phone = excluded.phone,
+      avatar_color = excluded.avatar_color,
+      two_factor_enabled = excluded.two_factor_enabled,
+      permissions = excluded.permissions,
+      notes = excluded.notes
+  `);
+
+  stmt.run({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    customRoleName: user.customRoleName || null,
+    status: user.status,
+    department: user.department,
+    phone: user.phone || null,
+    avatarColor: user.avatarColor || '#10b981',
+    twoFactorEnabled: user.twoFactorEnabled ? 1 : 0,
+    permissions: JSON.stringify(user.permissions || []),
+    lastLogin: user.lastLogin || null,
+    notes: user.notes || null,
+    createdAt: user.createdAt || new Date().toISOString(),
+  });
+}
+
+export function deleteUserById(id: string): void {
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+}
+
+export function updateUserStatus(id: string, status: string): void {
+  db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, id);
+}
+
+export function getAllAuditLogs(limit = 100): AuditLog[] {
+  const rows = db.prepare(`
+    SELECT id, user_id as userId, user_name as userName, action, target, details, ip_address as ipAddress, timestamp
+    FROM audit_logs
+    ORDER BY timestamp DESC
+    LIMIT ?
+  `).all(limit) as any[];
+
+  return rows.map(r => ({
+    id: r.id,
+    userId: r.userId || undefined,
+    userName: r.userName,
+    action: r.action,
+    target: r.target,
+    details: r.details,
+    ipAddress: r.ipAddress || undefined,
+    timestamp: r.timestamp,
+  }));
+}
+
+export function addAuditLog(entry: {
+  userId?: string;
+  userName: string;
+  action: 'create' | 'update' | 'delete' | 'status_change' | 'role_change' | 'login' | 'export';
+  target: string;
+  details: string;
+  ipAddress?: string;
+}): AuditLog {
+  const id = `log_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const timestamp = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO audit_logs (id, user_id, user_name, action, target, details, ip_address, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    entry.userId || null,
+    entry.userName,
+    entry.action,
+    entry.target,
+    entry.details,
+    entry.ipAddress || '127.0.0.1',
+    timestamp
+  );
+
+  return {
+    id,
+    ...entry,
+    timestamp,
+  };
 }
 
 export function closeDatabase() {

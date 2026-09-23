@@ -10,6 +10,7 @@ import { ForecastView } from './components/forecast/ForecastView';
 import { ReportsView } from './components/reports/ReportsView';
 import { RecurringView } from './components/recurring/RecurringView';
 import { CategoriesView } from './components/categories/CategoriesView';
+import { UsersView } from './components/users/UsersView';
 import { TransactionModal } from './components/modals/TransactionModal';
 import { CreditCardModal } from './components/modals/CreditCardModal';
 import { PayInvoiceModal } from './components/modals/PayInvoiceModal';
@@ -327,6 +328,8 @@ function MainApp() {
           )}
 
           {activeTab === 'reports' && <ReportsView />}
+
+          {activeTab === 'users' && <UsersView />}
         </main>
 
         {/* Footer */}

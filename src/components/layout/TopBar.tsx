@@ -48,6 +48,10 @@ const TAB_TITLES: Record<ActiveTab, { title: string; subtitle: string }> = {
     title: 'Relatórios & Exportação',
     subtitle: 'Gere demonstrativos e relatórios em PDF para impressão ou arquivamento',
   },
+  users: {
+    title: 'Usuários & Permissões',
+    subtitle: 'Gerenciamento de membros da equipe, controle de acesso e regras RBAC',
+  },
 };
 
 export const TopBar: React.FC<TopBarProps> = ({

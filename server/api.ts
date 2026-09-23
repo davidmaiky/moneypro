@@ -17,9 +17,17 @@ import {
   clearDatabase,
   getAllCategories,
   getAllAccounts,
+  getAllUsers,
+  getUserById,
+  saveUser,
+  deleteUserById,
+  updateUserStatus,
+  getAllAuditLogs,
+  addAuditLog,
   closeDatabase,
 } from './db';
 import { INITIAL_CATEGORIES } from '../src/data/initialData';
+import { PERMISSION_GROUPS, ROLE_DEFINITIONS, ALL_PERMISSION_IDS, User, UserRole, UserStatus } from '../src/types/user';
 
 export const apiRouter = Router();
 
@@ -227,5 +235,204 @@ apiRouter.post('/backup/clear', (_req: Request, res: Response) => {
     res.json({ success: true, data: getBootstrapData() });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erro ao limpar banco de dados' });
+  }
+});
+
+// 9. Users & Permissions (RBAC) CRUD
+apiRouter.get('/users', (_req: Request, res: Response) => {
+  try {
+    const users = getAllUsers();
+    res.json({
+      success: true,
+      users,
+      roles: ROLE_DEFINITIONS,
+      permissionGroups: PERMISSION_GROUPS,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao buscar lista de usuários' });
+  }
+});
+
+apiRouter.get('/users/:id', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const user = getUserById(id);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+    res.json({ success: true, user });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao buscar usuário' });
+  }
+});
+
+apiRouter.post('/users', (req: Request, res: Response) => {
+  try {
+    const body = req.body as Partial<User>;
+
+    if (!body.name || !body.email || !body.role) {
+      return res.status(400).json({ error: 'Nome, e-mail e perfil (role) são obrigatórios' });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(body.email)) {
+      return res.status(400).json({ error: 'Formato de e-mail inválido' });
+    }
+
+    const existingUsers = getAllUsers();
+    const isNew = !body.id;
+
+    // Check duplicate email
+    const duplicate = existingUsers.find(
+      u => u.email.toLowerCase() === body.email!.toLowerCase() && (!body.id || u.id !== body.id)
+    );
+    if (duplicate) {
+      return res.status(400).json({ error: 'Já existe um usuário cadastrado com este e-mail' });
+    }
+
+    const userRole = body.role as UserRole;
+    let permissions = body.permissions;
+    if (!permissions || !Array.isArray(permissions)) {
+      permissions = ROLE_DEFINITIONS[userRole]?.defaultPermissions || [];
+    }
+
+    const user: User = {
+      id: body.id || `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      name: body.name.trim(),
+      email: body.email.trim().toLowerCase(),
+      role: userRole,
+      customRoleName: body.customRoleName?.trim() || undefined,
+      status: (body.status as UserStatus) || 'active',
+      department: body.department?.trim() || 'Financeiro',
+      phone: body.phone?.trim() || undefined,
+      avatarColor: body.avatarColor || '#10b981',
+      twoFactorEnabled: Boolean(body.twoFactorEnabled),
+      permissions,
+      lastLogin: body.lastLogin,
+      createdAt: body.createdAt || new Date().toISOString(),
+      notes: body.notes?.trim() || undefined,
+    };
+
+    saveUser(user);
+
+    // Audit log
+    addAuditLog({
+      userId: user.id,
+      userName: 'Administrador',
+      action: isNew ? 'create' : 'update',
+      target: user.name,
+      details: isNew
+        ? `Usuário criado com perfil ${ROLE_DEFINITIONS[user.role]?.name || user.role} e ${user.permissions.length} permissões`
+        : `Cadastro atualizado. Perfil: ${ROLE_DEFINITIONS[user.role]?.name || user.role}. Status: ${user.status}`,
+    });
+
+    res.json({ success: true, user });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao salvar usuário' });
+  }
+});
+
+apiRouter.patch('/users/:id/status', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['active', 'inactive', 'pending'].includes(status)) {
+      return res.status(400).json({ error: 'Status inválido' });
+    }
+
+    const user = getUserById(id);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    // Safety: ensure at least one active admin
+    if (user.role === 'admin' && status !== 'active') {
+      const allUsers = getAllUsers();
+      const activeAdmins = allUsers.filter(u => u.role === 'admin' && u.status === 'active' && u.id !== id);
+      if (activeAdmins.length === 0) {
+        return res.status(400).json({ error: 'Não é possível desativar o único administrador ativo do sistema' });
+      }
+    }
+
+    updateUserStatus(id, status);
+
+    addAuditLog({
+      userId: id,
+      userName: 'Administrador',
+      action: 'status_change',
+      target: user.name,
+      details: `Status alterado de "${user.status}" para "${status}"`,
+    });
+
+    res.json({ success: true, id, status });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao alterar status do usuário' });
+  }
+});
+
+apiRouter.delete('/users/:id', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const user = getUserById(id);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    // Safety: ensure not deleting the last active admin
+    if (user.role === 'admin') {
+      const allUsers = getAllUsers();
+      const activeAdmins = allUsers.filter(u => u.role === 'admin' && u.id !== id);
+      if (activeAdmins.length === 0) {
+        return res.status(400).json({ error: 'Não é possível excluir o único administrador do sistema' });
+      }
+    }
+
+    deleteUserById(id);
+
+    addAuditLog({
+      userId: id,
+      userName: 'Administrador',
+      action: 'delete',
+      target: user.name,
+      details: `Usuário (${user.email}) removido permanentemente do sistema`,
+    });
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao excluir usuário' });
+  }
+});
+
+apiRouter.get('/audit-logs', (_req: Request, res: Response) => {
+  try {
+    const logs = getAllAuditLogs(100);
+    res.json({ success: true, logs });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao carregar logs de auditoria' });
+  }
+});
+
+apiRouter.post('/users/invite', (req: Request, res: Response) => {
+  try {
+    const { email, role, department } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'E-mail é obrigatório para envio do convite' });
+    }
+
+    addAuditLog({
+      userName: 'Administrador',
+      action: 'create',
+      target: email,
+      details: `Convite de acesso enviado para ${email} com função ${role || 'analyst'} (${department || 'Geral'})`,
+    });
+
+    res.json({
+      success: true,
+      message: `Convite enviado com sucesso para ${email}!`,
+      inviteLink: `https://moneypro.app/join?token=inv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao enviar convite' });
   }
 });

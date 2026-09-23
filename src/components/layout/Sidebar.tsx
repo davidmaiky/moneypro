@@ -7,6 +7,7 @@ import {
   FolderTree,
   TrendingUp,
   FileText,
+  Users,
   Eye,
   EyeOff,
   Database,
@@ -98,6 +99,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'reports',
       label: 'Relatórios PDF',
       icon: FileText,
+    },
+    {
+      id: 'users',
+      label: 'Usuários & Acesso',
+      icon: Users,
     },
   ];
 
