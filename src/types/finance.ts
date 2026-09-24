@@ -9,6 +9,7 @@ export interface Account {
   bankName: string;
   balance: number;
   color: string;
+  userId?: string;
 }
 
 export type CardBrand = 'mastercard' | 'visa' | 'elo' | 'amex';
@@ -24,6 +25,7 @@ export interface CreditCard {
   limitTotal: number;
   closingDay: number; // Dia de fechamento da fatura (ex: 20)
   dueDay: number;     // Dia de vencimento da fatura (ex: 27)
+  userId?: string;
 }
 
 export interface Category {
@@ -33,6 +35,7 @@ export interface Category {
   iconName: string;
   color: string;
   budgetMonthly?: number;
+  userId?: string;
 }
 
 export interface InstallmentInfo {
@@ -57,6 +60,7 @@ export interface RecurringTransaction {
   notes?: string;
   createdAt: string;
   generatedMonths: string[]; // Registros dos meses já gerados (ex: ['2026-09', '2026-10'])
+  userId?: string;
 }
 
 export interface Transaction {
@@ -75,6 +79,7 @@ export interface Transaction {
   recurringId?: string;      // ID da regra recorrente de origem se aplicável
   notes?: string;
   createdAt: string;
+  userId?: string;
 }
 
 export interface InvoiceSummary {

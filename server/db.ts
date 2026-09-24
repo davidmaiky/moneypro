@@ -5,6 +5,8 @@ import crypto from 'node:crypto';
 import { Account, Category, CreditCard, RecurringTransaction, Transaction } from '../src/types/finance';
 import { INITIAL_CATEGORIES } from '../src/data/initialData';
 import { User, AuditLog, ALL_PERMISSION_IDS, ROLE_DEFINITIONS } from '../src/types/user';
+import { logger } from './logger';
+import { RLSContext, RLSSecurityError, canMutateRow, canReadRow } from './rls';
 
 export interface PaidInvoiceRecord {
   cardId: string;
@@ -12,6 +14,7 @@ export interface PaidInvoiceRecord {
   paidAt: string;
   paidFromAccountId: string;
   amount: number;
+  userId?: string;
 }
 
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(process.cwd(), 'data');
@@ -36,11 +39,15 @@ export function hashPassword(password: string): string {
 export function verifyPassword(password: string, storedHash: string): boolean {
   try {
     const [salt, key] = storedHash.split(':');
-    if (!salt || !key) return false;
+    if (!salt || !key) {
+      logger.warn('Password verification failed: malformed stored hash format');
+      return false;
+    }
     const keyBuffer = Buffer.from(key, 'hex');
     const derivedKey = crypto.scryptSync(password, salt, 64);
     return crypto.timingSafeEqual(keyBuffer, derivedKey);
-  } catch {
+  } catch (err) {
+    logger.error('Cryptographic failure during password verification', err);
     return false;
   }
 }
@@ -55,6 +62,7 @@ export function initDatabase() {
       bank_name TEXT NOT NULL,
       balance REAL NOT NULL DEFAULT 0,
       color TEXT NOT NULL,
+      user_id TEXT DEFAULT 'usr_admin_01',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -69,6 +77,7 @@ export function initDatabase() {
       limit_total REAL NOT NULL DEFAULT 0,
       closing_day INTEGER NOT NULL,
       due_day INTEGER NOT NULL,
+      user_id TEXT DEFAULT 'usr_admin_01',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -79,6 +88,7 @@ export function initDatabase() {
       icon_name TEXT NOT NULL,
       color TEXT NOT NULL,
       budget_monthly REAL,
+      user_id TEXT DEFAULT 'usr_admin_01',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -97,6 +107,7 @@ export function initDatabase() {
       status TEXT NOT NULL DEFAULT 'completed',
       recurring_id TEXT,
       notes TEXT,
+      user_id TEXT DEFAULT 'usr_admin_01',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -117,6 +128,7 @@ export function initDatabase() {
       auto_process INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       notes TEXT,
+      user_id TEXT DEFAULT 'usr_admin_01',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       generated_months TEXT NOT NULL DEFAULT '[]'
     );
@@ -128,6 +140,7 @@ export function initDatabase() {
       paid_at TEXT NOT NULL,
       paid_from_account_id TEXT NOT NULL,
       amount REAL NOT NULL,
+      user_id TEXT DEFAULT 'usr_admin_01',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(card_id, invoice_month)
     );
@@ -175,15 +188,39 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
   `);
 
-  // Ensure password_hash column exists if table was created in an earlier schema
-  try {
-    const userColumns = db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[];
-    if (!userColumns.some(col => col.name === 'password_hash')) {
-      db.exec(`ALTER TABLE users ADD COLUMN password_hash TEXT;`);
+  // Helper for safe column migrations
+  function ensureColumn(table: string, col: string, def: string) {
+    try {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      if (!cols.some(c => c.name === col)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def};`);
+        logger.info(`Schema migration applied: added ${col} to ${table}`);
+      }
+    } catch (err) {
+      logger.error(`Migration error adding ${col} to ${table}:`, err);
     }
-  } catch (err) {
-    console.error('Migration warning (password_hash):', err);
   }
+
+  // Ensure password_hash column exists
+  ensureColumn('users', 'password_hash', 'TEXT');
+
+  // Ensure RLS ownership columns (user_id) exist on all core financial tables
+  ensureColumn('accounts', 'user_id', "TEXT DEFAULT 'usr_admin_01'");
+  ensureColumn('credit_cards', 'user_id', "TEXT DEFAULT 'usr_admin_01'");
+  ensureColumn('categories', 'user_id', "TEXT DEFAULT 'usr_admin_01'");
+  ensureColumn('transactions', 'user_id', "TEXT DEFAULT 'usr_admin_01'");
+  ensureColumn('recurring_transactions', 'user_id', "TEXT DEFAULT 'usr_admin_01'");
+  ensureColumn('paid_invoices', 'user_id', "TEXT DEFAULT 'usr_admin_01'");
+
+  // RLS Indexes for high performance isolation queries
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
+    CREATE INDEX IF NOT EXISTS idx_credit_cards_user_id ON credit_cards(user_id);
+    CREATE INDEX IF NOT EXISTS idx_categories_user_id ON categories(user_id);
+    CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_recurring_user_id ON recurring_transactions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_paid_invoices_user_id ON paid_invoices(user_id);
+  `);
 
   // Seed default categories if empty
   const countRow = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number };
@@ -361,8 +398,15 @@ export function initDatabase() {
 initDatabase();
 
 // --- Accounts Operations ---
-export function getAllAccounts(): Account[] {
-  const rows = db.prepare('SELECT id, name, type, bank_name as bankName, balance, color FROM accounts ORDER BY rowid ASC').all() as any[];
+export function getAllAccounts(ctx?: RLSContext): Account[] {
+  let query = 'SELECT id, name, type, bank_name as bankName, balance, color, user_id as userId FROM accounts';
+  const params: any[] = [];
+  if (ctx && ctx.role !== 'admin' && ctx.role !== 'manager') {
+    query += ' WHERE user_id = ? OR user_id = "usr_admin_01" OR user_id IS NULL';
+    params.push(ctx.userId);
+  }
+  query += ' ORDER BY rowid ASC';
+  const rows = (params.length ? db.prepare(query).all(...params) : db.prepare(query).all()) as any[];
   return rows.map(r => ({
     id: r.id,
     name: r.name,
@@ -370,13 +414,25 @@ export function getAllAccounts(): Account[] {
     bankName: r.bankName,
     balance: Number(r.balance),
     color: r.color,
+    userId: r.userId || undefined,
   }));
 }
 
-export function saveAccount(account: Account): void {
+export function saveAccount(account: Account, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM accounts WHERE id = ?').get(account.id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para alterar contas de outro usuário.');
+    }
+  }
+
+  const assignedUserId = account.userId || ctx?.userId || 'usr_admin_01';
   const stmt = db.prepare(`
-    INSERT INTO accounts (id, name, type, bank_name, balance, color)
-    VALUES (@id, @name, @type, @bankName, @balance, @color)
+    INSERT INTO accounts (id, name, type, bank_name, balance, color, user_id)
+    VALUES (@id, @name, @type, @bankName, @balance, @color, @userId)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       type = excluded.type,
@@ -391,20 +447,38 @@ export function saveAccount(account: Account): void {
     bankName: account.bankName,
     balance: account.balance,
     color: account.color,
+    userId: assignedUserId,
   });
 }
 
-export function deleteAccountById(id: string): void {
+export function deleteAccountById(id: string, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM accounts WHERE id = ?').get(id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para excluir esta conta.');
+    }
+  }
   db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
 }
 
 // --- Cards Operations ---
-export function getAllCards(): CreditCard[] {
-  const rows = db.prepare(`
+export function getAllCards(ctx?: RLSContext): CreditCard[] {
+  let query = `
     SELECT id, name, bank, last4, brand, color, gradient,
-           limit_total as limitTotal, closing_day as closingDay, due_day as dueDay
-    FROM credit_cards ORDER BY rowid ASC
-  `).all() as any[];
+           limit_total as limitTotal, closing_day as closingDay, due_day as dueDay,
+           user_id as userId
+    FROM credit_cards
+  `;
+  const params: any[] = [];
+  if (ctx && ctx.role !== 'admin' && ctx.role !== 'manager') {
+    query += ' WHERE user_id = ? OR user_id = "usr_admin_01" OR user_id IS NULL';
+    params.push(ctx.userId);
+  }
+  query += ' ORDER BY rowid ASC';
+  const rows = (params.length ? db.prepare(query).all(...params) : db.prepare(query).all()) as any[];
 
   return rows.map(r => ({
     id: r.id,
@@ -417,13 +491,25 @@ export function getAllCards(): CreditCard[] {
     limitTotal: Number(r.limitTotal),
     closingDay: Number(r.closingDay),
     dueDay: Number(r.dueDay),
+    userId: r.userId || undefined,
   }));
 }
 
-export function saveCard(card: CreditCard): void {
+export function saveCard(card: CreditCard, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM credit_cards WHERE id = ?').get(card.id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para alterar este cartão de crédito.');
+    }
+  }
+
+  const assignedUserId = card.userId || ctx?.userId || 'usr_admin_01';
   const stmt = db.prepare(`
-    INSERT INTO credit_cards (id, name, bank, last4, brand, color, gradient, limit_total, closing_day, due_day)
-    VALUES (@id, @name, @bank, @last4, @brand, @color, @gradient, @limitTotal, @closingDay, @dueDay)
+    INSERT INTO credit_cards (id, name, bank, last4, brand, color, gradient, limit_total, closing_day, due_day, user_id)
+    VALUES (@id, @name, @bank, @last4, @brand, @color, @gradient, @limitTotal, @closingDay, @dueDay, @userId)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       bank = excluded.bank,
@@ -446,19 +532,37 @@ export function saveCard(card: CreditCard): void {
     limitTotal: card.limitTotal,
     closingDay: card.closingDay,
     dueDay: card.dueDay,
+    userId: assignedUserId,
   });
 }
 
-export function deleteCardById(id: string): void {
+export function deleteCardById(id: string, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM credit_cards WHERE id = ?').get(id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para excluir este cartão.');
+    }
+  }
   db.prepare('DELETE FROM credit_cards WHERE id = ?').run(id);
 }
 
 // --- Categories Operations ---
-export function getAllCategories(): Category[] {
-  const rows = db.prepare(`
-    SELECT id, name, type, icon_name as iconName, color, budget_monthly as budgetMonthly
-    FROM categories ORDER BY rowid ASC
-  `).all() as any[];
+export function getAllCategories(ctx?: RLSContext): Category[] {
+  let query = `
+    SELECT id, name, type, icon_name as iconName, color, budget_monthly as budgetMonthly,
+           user_id as userId
+    FROM categories
+  `;
+  const params: any[] = [];
+  if (ctx && ctx.role !== 'admin' && ctx.role !== 'manager') {
+    query += ' WHERE user_id = ? OR user_id = "usr_admin_01" OR user_id IS NULL';
+    params.push(ctx.userId);
+  }
+  query += ' ORDER BY rowid ASC';
+  const rows = (params.length ? db.prepare(query).all(...params) : db.prepare(query).all()) as any[];
 
   return rows.map(r => ({
     id: r.id,
@@ -467,13 +571,25 @@ export function getAllCategories(): Category[] {
     iconName: r.iconName,
     color: r.color,
     budgetMonthly: r.budgetMonthly !== null ? Number(r.budgetMonthly) : undefined,
+    userId: r.userId || undefined,
   }));
 }
 
-export function saveCategory(category: Category): void {
+export function saveCategory(category: Category, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM categories WHERE id = ?').get(category.id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para alterar esta categoria.');
+    }
+  }
+
+  const assignedUserId = category.userId || ctx?.userId || 'usr_admin_01';
   const stmt = db.prepare(`
-    INSERT INTO categories (id, name, type, icon_name, color, budget_monthly)
-    VALUES (@id, @name, @type, @iconName, @color, @budgetMonthly)
+    INSERT INTO categories (id, name, type, icon_name, color, budget_monthly, user_id)
+    VALUES (@id, @name, @type, @iconName, @color, @budgetMonthly, @userId)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       type = excluded.type,
@@ -488,10 +604,21 @@ export function saveCategory(category: Category): void {
     iconName: category.iconName,
     color: category.color,
     budgetMonthly: category.budgetMonthly ?? null,
+    userId: assignedUserId,
   });
 }
 
-export function deleteCategoryById(id: string, reassignToCategoryId?: string): void {
+export function deleteCategoryById(id: string, reassignToCategoryId?: string, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM categories WHERE id = ?').get(id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para excluir esta categoria.');
+    }
+  }
+
   const tx = db.transaction(() => {
     if (reassignToCategoryId) {
       db.prepare('UPDATE transactions SET category_id = ? WHERE category_id = ?').run(reassignToCategoryId, id);
@@ -503,15 +630,22 @@ export function deleteCategoryById(id: string, reassignToCategoryId?: string): v
 }
 
 // --- Transactions Operations ---
-export function getAllTransactions(): Transaction[] {
-  const rows = db.prepare(`
+export function getAllTransactions(ctx?: RLSContext): Transaction[] {
+  let query = `
     SELECT id, description, amount, type, date, category_id as categoryId,
            payment_method as paymentMethod, account_id as accountId,
            credit_card_id as creditCardId, installments, invoice_month as invoiceMonth,
-           status, recurring_id as recurringId, notes, created_at as createdAt
+           status, recurring_id as recurringId, notes, created_at as createdAt,
+           user_id as userId
     FROM transactions
-    ORDER BY date DESC, created_at DESC
-  `).all() as any[];
+  `;
+  const params: any[] = [];
+  if (ctx && ctx.role !== 'admin' && ctx.role !== 'manager') {
+    query += ' WHERE user_id = ? OR user_id = "usr_admin_01" OR user_id IS NULL';
+    params.push(ctx.userId);
+  }
+  query += ' ORDER BY date DESC, created_at DESC';
+  const rows = (params.length ? db.prepare(query).all(...params) : db.prepare(query).all()) as any[];
 
   return rows.map(r => ({
     id: r.id,
@@ -529,20 +663,32 @@ export function getAllTransactions(): Transaction[] {
     recurringId: r.recurringId || undefined,
     notes: r.notes || undefined,
     createdAt: r.createdAt,
+    userId: r.userId || undefined,
   }));
 }
 
-export function saveTransaction(tx: Transaction): void {
+export function saveTransaction(tx: Transaction, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM transactions WHERE id = ?').get(tx.id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para alterar transações de outro usuário.');
+    }
+  }
+
+  const assignedUserId = tx.userId || ctx?.userId || 'usr_admin_01';
   const stmt = db.prepare(`
     INSERT INTO transactions (
       id, description, amount, type, date, category_id,
       payment_method, account_id, credit_card_id, installments,
-      invoice_month, status, recurring_id, notes, created_at
+      invoice_month, status, recurring_id, notes, created_at, user_id
     )
     VALUES (
       @id, @description, @amount, @type, @date, @categoryId,
       @paymentMethod, @accountId, @creditCardId, @installments,
-      @invoiceMonth, @status, @recurringId, @notes, @createdAt
+      @invoiceMonth, @status, @recurringId, @notes, @createdAt, @userId
     )
     ON CONFLICT(id) DO UPDATE SET
       description = excluded.description,
@@ -576,19 +722,30 @@ export function saveTransaction(tx: Transaction): void {
     recurringId: tx.recurringId ?? null,
     notes: tx.notes ?? null,
     createdAt: tx.createdAt || new Date().toISOString(),
+    userId: assignedUserId,
   });
 }
 
-export function saveTransactionsBatch(txList: Transaction[]): void {
+export function saveTransactionsBatch(txList: Transaction[], ctx?: RLSContext): void {
   const insertMany = db.transaction((list: Transaction[]) => {
     for (const tx of list) {
-      saveTransaction(tx);
+      saveTransaction(tx, ctx);
     }
   });
   insertMany(txList);
 }
 
-export function deleteTransactionById(id: string, deleteEntireSeries = false): void {
+export function deleteTransactionById(id: string, deleteEntireSeries = false, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM transactions WHERE id = ?').get(id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para excluir transações de outro usuário.');
+    }
+  }
+
   if (deleteEntireSeries) {
     const tx = db.prepare('SELECT installments FROM transactions WHERE id = ?').get(id) as any;
     if (tx && tx.installments) {
@@ -602,36 +759,42 @@ export function deleteTransactionById(id: string, deleteEntireSeries = false): v
           `).run(info.parentTransactionId, info.parentTransactionId);
           return;
         }
-      } catch {
-        // Fallback to single delete
+      } catch (err) {
+        logger.warn('Failed parsing installment payload during series deletion', { id, err });
       }
     }
   }
   db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
 }
 
-export function deleteTransactionsBatch(ids: string[]): void {
+export function deleteTransactionsBatch(ids: string[], ctx?: RLSContext): void {
   if (!ids || ids.length === 0) return;
   const deleteMany = db.transaction((list: string[]) => {
-    const stmt = db.prepare('DELETE FROM transactions WHERE id = ?');
     for (const id of list) {
-      stmt.run(id);
+      deleteTransactionById(id, false, ctx);
     }
   });
   deleteMany(ids);
 }
 
 // --- Recurring Transactions Operations ---
-export function getAllRecurring(): RecurringTransaction[] {
-  const rows = db.prepare(`
+export function getAllRecurring(ctx?: RLSContext): RecurringTransaction[] {
+  let query = `
     SELECT id, description, amount, type, category_id as categoryId,
            payment_method as paymentMethod, account_id as accountId,
            credit_card_id as creditCardId, day_of_month as dayOfMonth,
            auto_process as autoProcess, active, notes,
-           created_at as createdAt, generated_months as generatedMonths
+           created_at as createdAt, generated_months as generatedMonths,
+           user_id as userId
     FROM recurring_transactions
-    ORDER BY day_of_month ASC
-  `).all() as any[];
+  `;
+  const params: any[] = [];
+  if (ctx && ctx.role !== 'admin' && ctx.role !== 'manager') {
+    query += ' WHERE user_id = ? OR user_id = "usr_admin_01" OR user_id IS NULL';
+    params.push(ctx.userId);
+  }
+  query += ' ORDER BY day_of_month ASC';
+  const rows = (params.length ? db.prepare(query).all(...params) : db.prepare(query).all()) as any[];
 
   return rows.map(r => ({
     id: r.id,
@@ -648,20 +811,32 @@ export function getAllRecurring(): RecurringTransaction[] {
     notes: r.notes || undefined,
     createdAt: r.createdAt,
     generatedMonths: r.generatedMonths ? JSON.parse(r.generatedMonths) : [],
+    userId: r.userId || undefined,
   }));
 }
 
-export function saveRecurring(item: RecurringTransaction): void {
+export function saveRecurring(item: RecurringTransaction, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM recurring_transactions WHERE id = ?').get(item.id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para alterar recorrências de outro usuário.');
+    }
+  }
+
+  const assignedUserId = item.userId || ctx?.userId || 'usr_admin_01';
   const stmt = db.prepare(`
     INSERT INTO recurring_transactions (
       id, description, amount, type, category_id,
       payment_method, account_id, credit_card_id, day_of_month,
-      auto_process, active, notes, created_at, generated_months
+      auto_process, active, notes, created_at, generated_months, user_id
     )
     VALUES (
       @id, @description, @amount, @type, @categoryId,
       @paymentMethod, @accountId, @creditCardId, @dayOfMonth,
-      @autoProcess, @active, @notes, @createdAt, @generatedMonths
+      @autoProcess, @active, @notes, @createdAt, @generatedMonths, @userId
     )
     ON CONFLICT(id) DO UPDATE SET
       description = excluded.description,
@@ -693,21 +868,38 @@ export function saveRecurring(item: RecurringTransaction): void {
     notes: item.notes ?? null,
     createdAt: item.createdAt || new Date().toISOString(),
     generatedMonths: JSON.stringify(item.generatedMonths || []),
+    userId: assignedUserId,
   });
 }
 
-export function deleteRecurringById(id: string): void {
+export function deleteRecurringById(id: string, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM recurring_transactions WHERE id = ?').get(id) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para excluir esta recorrência.');
+    }
+  }
   db.prepare('DELETE FROM recurring_transactions WHERE id = ?').run(id);
 }
 
 // --- Paid Invoices Operations ---
-export function getAllPaidInvoices(): PaidInvoiceRecord[] {
-  const rows = db.prepare(`
+export function getAllPaidInvoices(ctx?: RLSContext): PaidInvoiceRecord[] {
+  let query = `
     SELECT card_id as cardId, invoice_month as invoiceMonth,
-           paid_at as paidAt, paid_from_account_id as paidFromAccountId, amount
+           paid_at as paidAt, paid_from_account_id as paidFromAccountId, amount,
+           user_id as userId
     FROM paid_invoices
-    ORDER BY paid_at DESC
-  `).all() as any[];
+  `;
+  const params: any[] = [];
+  if (ctx && ctx.role !== 'admin' && ctx.role !== 'manager') {
+    query += ' WHERE user_id = ? OR user_id = "usr_admin_01" OR user_id IS NULL';
+    params.push(ctx.userId);
+  }
+  query += ' ORDER BY paid_at DESC';
+  const rows = (params.length ? db.prepare(query).all(...params) : db.prepare(query).all()) as any[];
 
   return rows.map(r => ({
     cardId: r.cardId,
@@ -715,14 +907,26 @@ export function getAllPaidInvoices(): PaidInvoiceRecord[] {
     paidAt: r.paidAt,
     paidFromAccountId: r.paidFromAccountId,
     amount: Number(r.amount),
+    userId: r.userId || undefined,
   }));
 }
 
-export function savePaidInvoice(record: PaidInvoiceRecord): void {
+export function savePaidInvoice(record: PaidInvoiceRecord, ctx?: RLSContext): void {
+  if (ctx) {
+    if (ctx.role === 'viewer') {
+      throw new RLSSecurityError('Acesso negado: Perfil visualizador (viewer) possui permissão apenas de leitura.');
+    }
+    const existing = db.prepare('SELECT user_id as userId FROM paid_invoices WHERE card_id = ? AND invoice_month = ?').get(record.cardId, record.invoiceMonth) as any;
+    if (existing && !canMutateRow(ctx, existing.userId)) {
+      throw new RLSSecurityError('Violação de RLS: você não tem permissão para alterar faturas pagas de outro usuário.');
+    }
+  }
+
+  const assignedUserId = record.userId || ctx?.userId || 'usr_admin_01';
   const id = `${record.cardId}_${record.invoiceMonth}`;
   const stmt = db.prepare(`
-    INSERT INTO paid_invoices (id, card_id, invoice_month, paid_at, paid_from_account_id, amount)
-    VALUES (@id, @cardId, @invoiceMonth, @paidAt, @paidFromAccountId, @amount)
+    INSERT INTO paid_invoices (id, card_id, invoice_month, paid_at, paid_from_account_id, amount, user_id)
+    VALUES (@id, @cardId, @invoiceMonth, @paidAt, @paidFromAccountId, @amount, @userId)
     ON CONFLICT(card_id, invoice_month) DO UPDATE SET
       paid_at = excluded.paid_at,
       paid_from_account_id = excluded.paid_from_account_id,
@@ -735,18 +939,19 @@ export function savePaidInvoice(record: PaidInvoiceRecord): void {
     paidAt: record.paidAt,
     paidFromAccountId: record.paidFromAccountId,
     amount: record.amount,
+    userId: assignedUserId,
   });
 }
 
 // --- Bootstrap & Bulk Import/Export ---
-export function getBootstrapData() {
+export function getBootstrapData(ctx?: RLSContext) {
   return {
-    accounts: getAllAccounts(),
-    cards: getAllCards(),
-    categories: getAllCategories(),
-    transactions: getAllTransactions(),
-    recurringTransactions: getAllRecurring(),
-    paidInvoices: getAllPaidInvoices(),
+    accounts: getAllAccounts(ctx),
+    cards: getAllCards(ctx),
+    categories: getAllCategories(ctx),
+    transactions: getAllTransactions(ctx),
+    recurringTransactions: getAllRecurring(ctx),
+    paidInvoices: getAllPaidInvoices(ctx),
   };
 }
 
@@ -1016,7 +1221,7 @@ export function cleanupExpiredSessions(): void {
   try {
     db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
   } catch (err) {
-    console.error('Error cleaning expired sessions:', err);
+    logger.error('Error cleaning expired sessions', err);
   }
 }
 
@@ -1076,10 +1281,10 @@ export function closeDatabase() {
   try {
     if (db && db.open) {
       db.close();
-      console.log('SQLite database closed successfully.');
+      logger.info('SQLite database closed successfully.');
     }
   } catch (error) {
-    console.error('Error closing SQLite database:', error);
+    logger.error('Error closing SQLite database', error);
   }
 }
 
