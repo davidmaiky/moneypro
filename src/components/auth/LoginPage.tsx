@@ -7,85 +7,24 @@ import {
   Shield,
   ShieldCheck,
   ArrowRight,
-  Sparkles,
-  CheckCircle2,
   AlertCircle,
   Sun,
   Moon,
   Database,
-  KeyRound,
-  Users,
-  Briefcase,
-  Search,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
-
-interface DemoAccount {
-  name: string;
-  email: string;
-  role: string;
-  roleBadge: string;
-  color: string;
-  pass: string;
-  icon: React.ComponentType<{ className?: string }>;
-  description: string;
-}
-
-const DEMO_ACCOUNTS: DemoAccount[] = [
-  {
-    name: 'David Maiky',
-    email: 'david@empresa.com',
-    role: 'Administrador Geral',
-    roleBadge: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800',
-    color: '#8b5cf6',
-    pass: 'admin123',
-    icon: ShieldCheck,
-    description: 'Acesso irrestrito a todos os módulos, usuários e dados',
-  },
-  {
-    name: 'Mariana Souza',
-    email: 'mariana.souza@empresa.com',
-    role: 'Gestora Financeira',
-    roleBadge: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800',
-    color: '#3b82f6',
-    pass: 'gestor123',
-    icon: Briefcase,
-    description: 'Gestão de orçamentos, faturas de cartões e relatórios executivos',
-  },
-  {
-    name: 'Carlos Eduardo',
-    email: 'carlos.eduardo@empresa.com',
-    role: 'Analista Financeiro',
-    roleBadge: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
-    color: '#10b981',
-    pass: 'analista123',
-    icon: Users,
-    description: 'Lançamentos de extratos, despesas diárias e categorias',
-  },
-  {
-    name: 'Beatriz Lima',
-    email: 'beatriz.lima@empresa.com',
-    role: 'Auditora & Fiscal',
-    roleBadge: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700',
-    color: '#64748b',
-    pass: 'auditor123',
-    icon: Search,
-    description: 'Acesso seguro de leitura aos demonstrativos e auditoria',
-  },
-];
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
   const { resolvedTheme, toggleTheme } = useTheme();
 
-  const [email, setEmail] = useState('david@empresa.com');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [showQuickFill, setShowQuickFill] = useState(true);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,12 +46,6 @@ export const LoginPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleSelectDemo = (account: DemoAccount) => {
-    setEmail(account.email);
-    setPassword(account.pass);
-    setErrorMessage(null);
   };
 
   return (
@@ -278,60 +211,6 @@ export const LoginPage: React.FC = () => {
               )}
             </button>
           </form>
-
-          {/* Quick Demo Accounts Drawer */}
-          <div className="mt-6 pt-5 border-t border-slate-200/80 dark:border-slate-800/80">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300">
-                <KeyRound className="w-3.5 h-3.5 text-emerald-500" />
-                <span>Acesso Rápido / Demonstração</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowQuickFill(!showQuickFill)}
-                className="text-[11px] text-slate-400 hover:text-emerald-500 transition-colors cursor-pointer"
-              >
-                {showQuickFill ? 'Ocultar' : 'Exibir'}
-              </button>
-            </div>
-
-            {showQuickFill && (
-              <div className="grid grid-cols-2 gap-2 animate-in fade-in duration-200">
-                {DEMO_ACCOUNTS.map(acc => {
-                  const Icon = acc.icon;
-                  const isSelected = email === acc.email;
-                  return (
-                    <button
-                      key={acc.email}
-                      type="button"
-                      onClick={() => handleSelectDemo(acc)}
-                      className={`text-left p-2.5 rounded-xl border transition-all cursor-pointer ${
-                        isSelected
-                          ? 'border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/40 ring-1 ring-emerald-500/30'
-                          : 'border-slate-200/80 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 hover:bg-slate-100 dark:hover:bg-slate-800'
-                      }`}
-                      title={acc.description}
-                    >
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <div
-                          className="w-4 h-4 rounded-md flex items-center justify-center text-white text-[10px]"
-                          style={{ backgroundColor: acc.color }}
-                        >
-                          <Icon className="w-2.5 h-2.5" />
-                        </div>
-                        <span className="text-[11px] font-semibold truncate text-slate-900 dark:text-white">
-                          {acc.name.split(' ')[0]}
-                        </span>
-                      </div>
-                      <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                        {acc.role}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
 
           {/* Security Guarantee Badge */}
           <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-center gap-2 text-[11px] text-slate-400 dark:text-slate-500">
