@@ -948,9 +948,13 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Privacy Mode (Ocultar Valores)
   const [isPrivacyMode, setIsPrivacyMode] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('finanflow_privacy_mode') === 'true';
+      const saved = localStorage.getItem('finanflow_privacy_mode');
+      if (saved !== null) {
+        return saved === 'true';
+      }
+      return true;
     } catch {
-      return false;
+      return true;
     }
   });
 

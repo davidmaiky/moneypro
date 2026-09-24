@@ -17,7 +17,7 @@ import { useTheme } from '../../context/ThemeContext';
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
-  const { resolvedTheme, toggleTheme } = useTheme();
+  const { resolvedTheme, toggleTheme, setTheme } = useTheme();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -41,6 +41,7 @@ export const LoginPage: React.FC = () => {
         password,
         rememberMe,
       });
+      setTheme('light');
     } catch (err: any) {
       setErrorMessage(err.message || 'Falha ao autenticar. Verifique suas credenciais.');
     } finally {

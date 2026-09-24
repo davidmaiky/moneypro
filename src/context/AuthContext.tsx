@@ -68,6 +68,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (credentials: { email: string; password: string; rememberMe?: boolean }) => {
     const res = await api.login(credentials);
     if (res.user && res.token) {
+      try {
+        localStorage.setItem('finanflow_privacy_mode', 'true');
+        localStorage.setItem('finanflow_theme', 'light');
+      } catch {
+        // ignore
+      }
       setUser(res.user);
       setToken(res.token);
     }
