@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   CreditCard as CardIcon,
@@ -66,9 +66,15 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   const [updateEntireSeries, setUpdateEntireSeries] = useState(false);
   const [isQuickCategoryOpen, setIsQuickCategoryOpen] = useState(false);
 
+  const prevIsOpenRef = useRef(false);
+  const prevEditIdRef = useRef<string | null>(null);
+
   // Synchronize fields on open or when transactionToEdit changes
   useEffect(() => {
-    if (isOpen) {
+    const isOpening = isOpen && !prevIsOpenRef.current;
+    const isEditTargetChanged = transactionToEdit?.id !== prevEditIdRef.current;
+
+    if (isOpen && (isOpening || isEditTargetChanged)) {
       if (transactionToEdit) {
         setType(transactionToEdit.type);
         setPaymentMethod(transactionToEdit.paymentMethod);
@@ -103,6 +109,8 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
         }
       }
     }
+    prevIsOpenRef.current = isOpen;
+    prevEditIdRef.current = transactionToEdit?.id ?? null;
   }, [isOpen, transactionToEdit, defaultType, defaultPaymentMethod, defaultCardId, cards, accounts]);
 
   // Auto-select first matching category if empty
@@ -176,6 +184,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
           categoryId: categoryId || categories.find(c => c.type === 'expense')?.id || 'cat_outros',
           cardId: selectedCard.id,
           notes: notes.trim() || undefined,
+          status,
         });
       } else {
         addTransaction({

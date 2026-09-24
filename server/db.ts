@@ -718,7 +718,7 @@ export function saveTransaction(tx: Transaction, ctx?: RLSContext): void {
     creditCardId: tx.creditCardId ?? null,
     installments: tx.installments ? JSON.stringify(tx.installments) : null,
     invoiceMonth: tx.invoiceMonth ?? null,
-    status: tx.status,
+    status: tx.status || 'completed',
     recurringId: tx.recurringId ?? null,
     notes: tx.notes ?? null,
     createdAt: tx.createdAt || new Date().toISOString(),

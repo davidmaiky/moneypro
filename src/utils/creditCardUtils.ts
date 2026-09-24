@@ -59,8 +59,9 @@ export function createInstallmentTransactions(params: {
   categoryId: string;
   card: CreditCard;
   notes?: string;
+  status?: 'completed' | 'pending';
 }): Transaction[] {
-  const { description, totalAmount, installmentsCount, purchaseDate, categoryId, card, notes } = params;
+  const { description, totalAmount, installmentsCount, purchaseDate, categoryId, card, notes, status = 'completed' } = params;
   const parentId = `tx_parent_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const firstInvoiceMonth = calculateInvoiceMonth(purchaseDate, card);
   
@@ -102,7 +103,7 @@ export function createInstallmentTransactions(params: {
       creditCardId: card.id,
       installments: installmentInfo,
       invoiceMonth: currentInvoiceMonth,
-      status: 'completed',
+      status: status || 'completed',
       notes: notes || (installmentsCount > 1 ? `Compra parcelada em ${installmentsCount}x de R$ ${installmentAmount.toFixed(2)}` : undefined),
       createdAt: new Date().toISOString(),
     });

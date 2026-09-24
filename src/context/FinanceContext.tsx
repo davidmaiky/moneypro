@@ -36,6 +36,7 @@ export interface FinanceContextType {
     categoryId: string;
     cardId: string;
     notes?: string;
+    status?: 'completed' | 'pending';
   }) => void;
   updateTransaction: (id: string, updates: Partial<Transaction>, updateEntireSeries?: boolean) => void;
   deleteTransaction: (id: string, deleteEntireSeries?: boolean) => void;
@@ -385,6 +386,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     categoryId: string;
     cardId: string;
     notes?: string;
+    status?: 'completed' | 'pending';
   }) => {
     const targetCard = cards.find(c => c.id === params.cardId);
     if (!targetCard) return;
@@ -397,6 +399,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       categoryId: params.categoryId,
       card: targetCard,
       notes: params.notes,
+      status: params.status || 'completed',
     });
 
     setTransactions(prev => [...newTxs, ...prev]);
