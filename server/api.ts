@@ -10,6 +10,7 @@ import {
   saveTransaction,
   saveTransactionsBatch,
   deleteTransactionById,
+  deleteTransactionsBatch,
   saveRecurring,
   deleteRecurringById,
   savePaidInvoice,
@@ -321,6 +322,19 @@ apiRouter.delete('/transactions/:id', (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erro ao excluir transação' });
+  }
+});
+
+apiRouter.post('/transactions/delete-batch', (req: Request, res: Response) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids)) {
+      return res.status(400).json({ error: 'Lista de IDs inválida' });
+    }
+    deleteTransactionsBatch(ids);
+    res.json({ success: true, count: ids.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao excluir transações em lote' });
   }
 });
 

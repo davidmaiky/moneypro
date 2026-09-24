@@ -147,6 +147,13 @@ export const api = {
     });
   },
 
+  async deleteTransactionsBatch(ids: string[]): Promise<{ success: boolean; count: number }> {
+    return request('/api/transactions/delete-batch', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    });
+  },
+
   // Recurring
   async saveRecurring(recurring: RecurringTransaction): Promise<{ success: boolean; recurring: RecurringTransaction }> {
     return request('/api/recurring', {

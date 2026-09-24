@@ -37,8 +37,9 @@ export interface FinanceContextType {
     cardId: string;
     notes?: string;
   }) => void;
-  updateTransaction: (id: string, updates: Partial<Transaction>) => void;
+  updateTransaction: (id: string, updates: Partial<Transaction>, updateEntireSeries?: boolean) => void;
   deleteTransaction: (id: string, deleteEntireSeries?: boolean) => void;
+  deleteTransactionsBatch: (ids: string[]) => void;
 
   // Recurring Transactions
   addRecurringTransaction: (data: Omit<RecurringTransaction, 'id' | 'createdAt' | 'generatedMonths'>) => void;
@@ -403,17 +404,108 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   // Update transaction
-  const updateTransaction = (id: string, updates: Partial<Transaction>) => {
-    setTransactions(prev =>
-      prev.map(t => {
-        if (t.id === id) {
-          const updated = { ...t, ...updates };
-          api.saveTransaction(updated).catch(err => console.error('Erro ao atualizar transação no banco:', err));
-          return updated;
-        }
-        return t;
-      })
-    );
+  const updateTransaction = (
+    id: string,
+    updates: Partial<Transaction>,
+    updateEntireSeries = false
+  ) => {
+    const target = transactions.find(t => t.id === id);
+    if (!target) return;
+
+    const updatedTx: Transaction = { ...target, ...updates };
+
+    if (updateEntireSeries && target.installments?.parentTransactionId) {
+      const parentId = target.installments.parentTransactionId;
+      setTransactions(prev =>
+        prev.map(t => {
+          if (t.installments?.parentTransactionId === parentId) {
+            const updatedItem: Transaction = {
+              ...t,
+              description: updates.description !== undefined ? updates.description : t.description,
+              categoryId: updates.categoryId !== undefined ? updates.categoryId : t.categoryId,
+              notes: updates.notes !== undefined ? updates.notes : t.notes,
+            };
+            api.saveTransaction(updatedItem).catch(err => console.error('Erro ao atualizar transação da série:', err));
+            return updatedItem;
+          }
+          return t;
+        })
+      );
+    } else {
+      setTransactions(prev =>
+        prev.map(t => {
+          if (t.id === id) {
+            api.saveTransaction(updatedTx).catch(err => console.error('Erro ao atualizar transação no banco:', err));
+            return updatedTx;
+          }
+          return t;
+        })
+      );
+    }
+
+    // Reconcile account balances if account transactions were involved
+    const accountDeltas: { [accId: string]: number } = {};
+
+    // 1. Revert target's impact on its old account
+    if (target.paymentMethod === 'account' && target.accountId) {
+      const revertDiff = target.type === 'income' ? -target.amount : target.amount;
+      accountDeltas[target.accountId] = (accountDeltas[target.accountId] || 0) + revertDiff;
+    }
+
+    // 2. Apply updatedTx's impact on its account
+    if (updatedTx.paymentMethod === 'account' && updatedTx.accountId) {
+      const applyDiff = updatedTx.type === 'income' ? updatedTx.amount : -updatedTx.amount;
+      accountDeltas[updatedTx.accountId] = (accountDeltas[updatedTx.accountId] || 0) + applyDiff;
+    }
+
+    // Update affected accounts if any balance actually changed
+    const hasBalanceChanges = Object.values(accountDeltas).some(delta => Math.abs(delta) > 0.0001);
+    if (hasBalanceChanges) {
+      setAccounts(prevAccounts =>
+        prevAccounts.map(acc => {
+          if (accountDeltas[acc.id]) {
+            const newBal = Number((acc.balance + accountDeltas[acc.id]).toFixed(2));
+            const updatedAcc = { ...acc, balance: newBal };
+            api.saveAccount(updatedAcc).catch(err => console.error('Erro ao atualizar saldo de conta:', err));
+            return updatedAcc;
+          }
+          return acc;
+        })
+      );
+    }
+  };
+
+  // Delete transactions batch
+  const deleteTransactionsBatch = (ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    const idSet = new Set(ids);
+    const targets = transactions.filter(t => idSet.has(t.id));
+
+    setTransactions(prev => prev.filter(t => !idSet.has(t.id)));
+    api.deleteTransactionsBatch(ids).catch(err => console.error('Erro ao excluir lote de transações:', err));
+
+    // Revert account balances for deleted transactions that were linked to accounts
+    const accountDeltas: { [accId: string]: number } = {};
+    for (const target of targets) {
+      if (target.paymentMethod === 'account' && target.accountId) {
+        const revertDiff = target.type === 'income' ? -target.amount : target.amount;
+        accountDeltas[target.accountId] = (accountDeltas[target.accountId] || 0) + revertDiff;
+      }
+    }
+
+    if (Object.keys(accountDeltas).length > 0) {
+      setAccounts(prevAccounts =>
+        prevAccounts.map(acc => {
+          if (accountDeltas[acc.id]) {
+            const newBal = Number((acc.balance + accountDeltas[acc.id]).toFixed(2));
+            const updatedAcc = { ...acc, balance: newBal };
+            api.saveAccount(updatedAcc).catch(err => console.error('Erro ao atualizar saldo de conta:', err));
+            return updatedAcc;
+          }
+          return acc;
+        })
+      );
+    }
   };
 
   // Delete transaction (optionally delete all installments in series)
@@ -1049,6 +1141,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       addCreditCardPurchase,
       updateTransaction,
       deleteTransaction,
+      deleteTransactionsBatch,
       addRecurringTransaction,
       updateRecurringTransaction,
       deleteRecurringTransaction,

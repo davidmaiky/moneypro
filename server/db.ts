@@ -610,6 +610,17 @@ export function deleteTransactionById(id: string, deleteEntireSeries = false): v
   db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
 }
 
+export function deleteTransactionsBatch(ids: string[]): void {
+  if (!ids || ids.length === 0) return;
+  const deleteMany = db.transaction((list: string[]) => {
+    const stmt = db.prepare('DELETE FROM transactions WHERE id = ?');
+    for (const id of list) {
+      stmt.run(id);
+    }
+  });
+  deleteMany(ids);
+}
+
 // --- Recurring Transactions Operations ---
 export function getAllRecurring(): RecurringTransaction[] {
   const rows = db.prepare(`

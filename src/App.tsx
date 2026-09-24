@@ -26,7 +26,7 @@ import { DeleteCategoryModal } from './components/modals/DeleteCategoryModal';
 import { BackupRestoreModal } from './components/modals/BackupRestoreModal';
 import { KeyboardShortcutsModal } from './components/modals/KeyboardShortcutsModal';
 import { OfflineIndicator } from './components/pwa/OfflineIndicator';
-import { CreditCard, Account, PaymentMethod, TransactionType, RecurringTransaction, Category } from './types/finance';
+import { CreditCard, Account, PaymentMethod, TransactionType, RecurringTransaction, Category, Transaction } from './types/finance';
 import { generateFinancialPDFReport } from './utils/pdfGenerator';
 import { RotateCcw, ShieldCheck, Database, Keyboard } from 'lucide-react';
 
@@ -47,6 +47,7 @@ function MainApp() {
 
   // Modals state
   const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [transactionModalDefaults, setTransactionModalDefaults] = useState<{
     type?: TransactionType;
     paymentMethod?: PaymentMethod;
@@ -131,7 +132,13 @@ function MainApp() {
     paymentMethod?: PaymentMethod;
     cardId?: string;
   }) => {
+    setEditingTransaction(null);
     setTransactionModalDefaults(defaults || { type: 'expense', paymentMethod: 'credit_card' });
+    setIsTransactionModalOpen(true);
+  }, []);
+
+  const handleOpenEditTransaction = useCallback((transaction: Transaction) => {
+    setEditingTransaction(transaction);
     setIsTransactionModalOpen(true);
   }, []);
 
@@ -149,6 +156,7 @@ function MainApp() {
       // ESC: Close all open modals
       if (e.key === 'Escape') {
         setIsTransactionModalOpen(false);
+        setEditingTransaction(null);
         setIsCardModalOpen(false);
         setIsAccountModalOpen(false);
         setIsPayInvoiceModalOpen(false);
@@ -289,6 +297,7 @@ function MainApp() {
           {activeTab === 'transactions' && (
             <TransactionsView
               onOpenNewTransaction={() => handleOpenNewTransaction()}
+              onEditTransaction={handleOpenEditTransaction}
             />
           )}
 
@@ -379,7 +388,11 @@ function MainApp() {
       {/* Modals */}
       <TransactionModal
         isOpen={isTransactionModalOpen}
-        onClose={() => setIsTransactionModalOpen(false)}
+        onClose={() => {
+          setIsTransactionModalOpen(false);
+          setEditingTransaction(null);
+        }}
+        transactionToEdit={editingTransaction}
         defaultType={transactionModalDefaults.type}
         defaultPaymentMethod={transactionModalDefaults.paymentMethod}
         defaultCardId={transactionModalDefaults.cardId}
