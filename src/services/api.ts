@@ -210,10 +210,17 @@ export const api = {
     return request(`/api/users/${id}`);
   },
 
-  async saveUser(user: Partial<User>): Promise<{ success: boolean; user: User }> {
+  async saveUser(user: Partial<User> & { password?: string }): Promise<{ success: boolean; user: User }> {
     return request('/api/users', {
       method: 'POST',
       body: JSON.stringify(user),
+    });
+  },
+
+  async updateUserPassword(id: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+    return request(`/api/users/${id}/password`, {
+      method: 'POST',
+      body: JSON.stringify({ newPassword }),
     });
   },
 

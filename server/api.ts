@@ -479,7 +479,10 @@ apiRouter.post('/users', (req: Request, res: Response) => {
     };
 
     const rawPassword = (body as any).password as string | undefined;
-    saveUser(user, rawPassword || (isNew ? 'senha123' : undefined));
+    if (rawPassword && rawPassword.trim().length < 6) {
+      return res.status(400).json({ error: 'A senha deve possuir no mínimo 6 caracteres' });
+    }
+    saveUser(user, rawPassword ? rawPassword.trim() : (isNew ? 'senha123' : undefined));
 
     // Audit log
     const actorName = (req as any).user?.name || 'Administrador';
@@ -496,6 +499,37 @@ apiRouter.post('/users', (req: Request, res: Response) => {
     res.json({ success: true, user });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Erro ao salvar usuário' });
+  }
+});
+
+apiRouter.post('/users/:id/password', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.trim().length < 6) {
+      return res.status(400).json({ error: 'A nova senha deve possuir no mínimo 6 caracteres' });
+    }
+
+    const user = getUserById(id);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    updateUserPassword(id, newPassword.trim());
+
+    const actorName = (req as any).user?.name || 'Administrador';
+    addAuditLog({
+      userId: (req as any).user?.id || id,
+      userName: actorName,
+      action: 'update',
+      target: user.email,
+      details: `Senha de acesso do usuário "${user.name}" alterada com sucesso`,
+    });
+
+    res.json({ success: true, message: `Senha de ${user.name} atualizada com sucesso!` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao atualizar senha do usuário' });
   }
 });
 
