@@ -17,6 +17,9 @@ import {
   Layers,
   Save,
   Palette,
+  Lock,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import {
   User,
@@ -30,8 +33,9 @@ import {
 interface UserModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (user: Partial<User>) => Promise<void>;
+  onSave: (user: Partial<User> & { password?: string }) => Promise<void>;
   userToEdit: User | null;
+  onChangePassword?: (user: User) => void;
 }
 
 const AVATAR_COLORS = [
@@ -50,12 +54,15 @@ export const UserModal: React.FC<UserModalProps> = ({
   onClose,
   onSave,
   userToEdit,
+  onChangePassword,
 }) => {
   const isEditing = Boolean(userToEdit);
 
   const [activeTab, setActiveTab] = useState<'profile' | 'permissions'>('profile');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [initialPassword, setInitialPassword] = useState('');
+  const [showInitialPassword, setShowInitialPassword] = useState(false);
   const [role, setRole] = useState<UserRole>('analyst');
   const [customRoleName, setCustomRoleName] = useState('');
   const [department, setDepartment] = useState('Financeiro');
@@ -86,6 +93,8 @@ export const UserModal: React.FC<UserModalProps> = ({
         // Defaults for new user
         setName('');
         setEmail('');
+        setInitialPassword('');
+        setShowInitialPassword(false);
         setRole('analyst');
         setCustomRoleName('');
         setDepartment('Financeiro');
@@ -154,11 +163,17 @@ export const UserModal: React.FC<UserModalProps> = ({
       return;
     }
 
+    if (!isEditing && initialPassword.trim() && initialPassword.trim().length < 6) {
+      setErrorMessage('A senha inicial deve ter no mínimo 6 caracteres');
+      setActiveTab('profile');
+      return;
+    }
+
     try {
       setIsSubmitting(true);
       setErrorMessage(null);
 
-      const payload: Partial<User> = {
+      const payload: Partial<User> & { password?: string } = {
         id: userToEdit?.id,
         name: name.trim(),
         email: email.trim().toLowerCase(),
@@ -172,6 +187,10 @@ export const UserModal: React.FC<UserModalProps> = ({
         notes: notes.trim() || undefined,
         permissions: selectedPermissions,
       };
+
+      if (!isEditing && initialPassword.trim()) {
+        payload.password = initialPassword.trim();
+      }
 
       await onSave(payload);
       onClose();
@@ -334,6 +353,76 @@ export const UserModal: React.FC<UserModalProps> = ({
                     </div>
                   </div>
                 </div>
+
+                {/* Password field or Change Password Box */}
+                {!isEditing ? (
+                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Senha Inicial de Acesso
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const randomPass = 'Pro$' + Math.random().toString(36).substring(2, 8) + '!';
+                          setInitialPassword(randomPass);
+                          setShowInitialPassword(true);
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Gerar senha automática</span>
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                      <input
+                        type={showInitialPassword ? 'text' : 'password'}
+                        placeholder="Deixe em branco para usar o padrão (senha123)"
+                        value={initialPassword}
+                        onChange={e => setInitialPassword(e.target.value)}
+                        className="w-full pl-9 pr-10 py-2 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowInitialPassword(!showInitialPassword)}
+                        className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        {showInitialPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+                      O colaborador poderá alterar esta senha no primeiro login ou a qualquer momento.
+                    </p>
+                  </div>
+                ) : (
+                  userToEdit && onChangePassword && (
+                    <div className="p-3 bg-amber-50/60 dark:bg-amber-950/30 rounded-xl border border-amber-200/70 dark:border-amber-900/50 flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <Key className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                        <div>
+                          <div className="text-xs font-bold text-slate-900 dark:text-white">
+                            Senha de Acesso
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            Deseja redefinir ou criar uma nova senha para este usuário?
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          onChangePassword(userToEdit);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/60 dark:hover:bg-amber-900 rounded-xl transition-colors cursor-pointer shrink-0"
+                      >
+                        <Key className="w-3.5 h-3.5" />
+                        <span>Alterar Senha</span>
+                      </button>
+                    </div>
+                  )
+                )}
 
                 {/* Status & Avatar Color */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-100 dark:border-slate-800">

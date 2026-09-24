@@ -41,6 +41,7 @@ import { UserModal } from './UserModal';
 import { DeleteUserModal } from './DeleteUserModal';
 import { UserDetailModal } from './UserDetailModal';
 import { InviteUserModal } from './InviteUserModal';
+import { ChangePasswordModal } from './ChangePasswordModal';
 
 export const UsersView: React.FC = () => {
   // Data State
@@ -71,6 +72,9 @@ export const UsersView: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+
+  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false);
+  const [userToChangePassword, setUserToChangePassword] = useState<User | null>(null);
 
   // Matrix Filter State
   const [matrixSearch, setMatrixSearch] = useState('');
@@ -193,6 +197,11 @@ export const UsersView: React.FC = () => {
   const handleOpenDeleteUser = (user: User) => {
     setUserToDelete(user);
     setIsDeleteModalOpen(true);
+  };
+
+  const handleOpenChangePassword = (user: User) => {
+    setUserToChangePassword(user);
+    setIsChangePasswordModalOpen(true);
   };
 
   const handleSaveUser = async (userData: Partial<User>) => {
@@ -837,6 +846,15 @@ export const UsersView: React.FC = () => {
 
                               <button
                                 type="button"
+                                onClick={() => handleOpenChangePassword(user)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/40 dark:hover:text-amber-400 transition-colors cursor-pointer"
+                                title="Alterar senha de acesso"
+                              >
+                                <Key className="w-4 h-4" />
+                              </button>
+
+                              <button
+                                type="button"
                                 onClick={() => handleOpenDeleteUser(user)}
                                 disabled={isLastAdmin}
                                 className={`p-1.5 rounded-lg transition-colors ${
@@ -1099,6 +1117,7 @@ export const UsersView: React.FC = () => {
         onClose={() => setIsUserModalOpen(false)}
         onSave={handleSaveUser}
         userToEdit={userToEdit}
+        onChangePassword={handleOpenChangePassword}
       />
 
       {/* User Details Modal */}
@@ -1109,6 +1128,21 @@ export const UsersView: React.FC = () => {
         onEdit={user => {
           setIsDetailModalOpen(false);
           handleOpenEditUser(user);
+        }}
+        onChangePassword={user => {
+          setIsDetailModalOpen(false);
+          handleOpenChangePassword(user);
+        }}
+      />
+
+      {/* Change Password Modal */}
+      <ChangePasswordModal
+        isOpen={isChangePasswordModalOpen}
+        onClose={() => setIsChangePasswordModalOpen(false)}
+        user={userToChangePassword}
+        onSuccess={(msg) => {
+          showToast(msg, 'success');
+          loadData(true);
         }}
       />
 
