@@ -172,13 +172,31 @@ export function securityHeaders(_req: Request, res: Response, next: NextFunction
   );
 
   // 8. Cross-Origin Isolation policies
+  // COOP isolates the browsing context exclusively to same-origin documents
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  // COEP prevents loading any cross-origin resource that does not explicitly grant permission via CORS or CORP
+  res.setHeader('Cross-Origin-Embedder-Policy', process.env.COEP_POLICY || 'require-corp');
+  // CORP restricts who can embed this site's resources
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
 
-  // 9. Content Security Policy (CSP) tailored for Vite React PWA + Google Fonts + Lucide Icons
+  // 9. Content Security Policy (CSP)
+  // Strictly eliminates 'unsafe-inline' and 'unsafe-eval' from script-src to protect against XSS attacks.
+  // In production builds, only 'self' is permitted.
+  // In development, exact cryptographic SHA-256 hashes are used for Vite's preamble and SW registration.
+  const isProd = process.env.NODE_ENV === 'production';
+  const devScriptHashes = [
+    "'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk='", // Vite React Refresh preamble
+    "'sha256-/AO8vAagk08SqUGxY96ci/dGyTDsuoetPOJYMn7sc+E='", // Vite PWA dev SW entry point
+  ];
+
+  const extraScriptSrc = process.env.CSP_EXTRA_SCRIPT_SRC ? ` ${process.env.CSP_EXTRA_SCRIPT_SRC}` : '';
+  const scriptSrc = isProd
+    ? `'self'${extraScriptSrc}`
+    : `'self' ${devScriptHashes.join(' ')}${extraScriptSrc}`;
+
   const cspDirectives = [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'", // Vite/React runtime & HMR
+    `script-src ${scriptSrc}`,
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com data:",
     "img-src 'self' data: blob: https:",
