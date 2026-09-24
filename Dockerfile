@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install all dependencies (including devDependencies needed for build)
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 # Copy all source files
 COPY . .
@@ -23,7 +23,7 @@ COPY . .
 RUN npm run build
 
 # Remove development dependencies to keep production footprint minimal
-RUN npm prune --omit=dev
+RUN npm prune --omit=dev --legacy-peer-deps
 
 # ==========================================
 # Stage 2: Production Runner
