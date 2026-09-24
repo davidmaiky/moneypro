@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'node:crypto';
 import { Account, Category, CreditCard, RecurringTransaction, Transaction } from '../src/types/finance';
 import { INITIAL_CATEGORIES } from '../src/data/initialData';
 import { User, AuditLog, ALL_PERMISSION_IDS, ROLE_DEFINITIONS } from '../src/types/user';
@@ -24,6 +25,25 @@ export const db = new Database(dbPath);
 // Performance & integrity pragmas
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+
+// Security & Password hashing utilities (node:crypto)
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derivedKey = crypto.scryptSync(password, salt, 64);
+  return `${salt}:${derivedKey.toString('hex')}`;
+}
+
+export function verifyPassword(password: string, storedHash: string): boolean {
+  try {
+    const [salt, key] = storedHash.split(':');
+    if (!salt || !key) return false;
+    const keyBuffer = Buffer.from(key, 'hex');
+    const derivedKey = crypto.scryptSync(password, salt, 64);
+    return crypto.timingSafeEqual(keyBuffer, derivedKey);
+  } catch {
+    return false;
+  }
+}
 
 // Initialize database tables
 export function initDatabase() {
@@ -116,6 +136,7 @@ export function initDatabase() {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
+      password_hash TEXT,
       role TEXT NOT NULL,
       custom_role_name TEXT,
       status TEXT NOT NULL DEFAULT 'active',
@@ -128,6 +149,17 @@ export function initDatabase() {
       notes TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
 
     CREATE TABLE IF NOT EXISTS audit_logs (
       id TEXT PRIMARY KEY,
@@ -142,6 +174,16 @@ export function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
   `);
+
+  // Ensure password_hash column exists if table was created in an earlier schema
+  try {
+    const userColumns = db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[];
+    if (!userColumns.some(col => col.name === 'password_hash')) {
+      db.exec(`ALTER TABLE users ADD COLUMN password_hash TEXT;`);
+    }
+  } catch (err) {
+    console.error('Migration warning (password_hash):', err);
+  }
 
   // Seed default categories if empty
   const countRow = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number };
@@ -246,16 +288,26 @@ export function initDatabase() {
       },
     ];
 
+    const defaultPasswords: Record<string, string> = {
+      'david@empresa.com': 'admin123',
+      'mariana.souza@empresa.com': 'gestor123',
+      'carlos.eduardo@empresa.com': 'analista123',
+      'beatriz.lima@empresa.com': 'auditor123',
+      'lucas.andrade@empresa.com': 'analista123',
+    };
+
     const insertUserStmt = db.prepare(`
-      INSERT INTO users (id, name, email, role, custom_role_name, status, department, phone, avatar_color, two_factor_enabled, permissions, last_login, notes, created_at)
-      VALUES (@id, @name, @email, @role, @customRoleName, @status, @department, @phone, @avatarColor, @twoFactorEnabled, @permissions, @lastLogin, @notes, @createdAt)
+      INSERT INTO users (id, name, email, password_hash, role, custom_role_name, status, department, phone, avatar_color, two_factor_enabled, permissions, last_login, notes, created_at)
+      VALUES (@id, @name, @email, @passwordHash, @role, @customRoleName, @status, @department, @phone, @avatarColor, @twoFactorEnabled, @permissions, @lastLogin, @notes, @createdAt)
     `);
 
     for (const u of defaultUsers) {
+      const pass = defaultPasswords[u.email] || 'senha123';
       insertUserStmt.run({
         id: u.id,
         name: u.name,
         email: u.email,
+        passwordHash: hashPassword(pass),
         role: u.role,
         customRoleName: u.customRoleName || null,
         status: u.status,
@@ -283,6 +335,25 @@ export function initDatabase() {
       '127.0.0.1',
       new Date().toISOString()
     );
+  }
+
+  // Ensure any existing users without a password receive one
+  try {
+    const defaultPasswords: Record<string, string> = {
+      'david@empresa.com': 'admin123',
+      'mariana.souza@empresa.com': 'gestor123',
+      'carlos.eduardo@empresa.com': 'analista123',
+      'beatriz.lima@empresa.com': 'auditor123',
+      'lucas.andrade@empresa.com': 'analista123',
+    };
+    const usersWithoutPassword = db.prepare(`SELECT id, email FROM users WHERE password_hash IS NULL OR password_hash = ''`).all() as { id: string; email: string }[];
+    const updatePassStmt = db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`);
+    for (const u of usersWithoutPassword) {
+      const pass = defaultPasswords[u.email] || 'senha123';
+      updatePassStmt.run(hashPassword(pass), u.id);
+    }
+  } catch (err) {
+    console.error('Warning initializing existing user passwords:', err);
   }
 }
 
@@ -798,19 +869,51 @@ export function getUserById(id: string): User | undefined {
   };
 }
 
-export function saveUser(user: User): void {
+export function getUserByEmail(email: string): (User & { passwordHash?: string }) | undefined {
+  const r = db.prepare(`
+    SELECT id, name, email, password_hash as passwordHash, role, custom_role_name as customRoleName, status,
+           department, phone, avatar_color as avatarColor, two_factor_enabled as twoFactorEnabled,
+           permissions, last_login as lastLogin, notes, created_at as createdAt
+    FROM users WHERE LOWER(email) = LOWER(?)
+  `).get(email) as any;
+
+  if (!r) return undefined;
+
+  return {
+    id: r.id,
+    name: r.name,
+    email: r.email,
+    passwordHash: r.passwordHash || undefined,
+    role: r.role,
+    customRoleName: r.customRoleName || undefined,
+    status: r.status,
+    department: r.department,
+    phone: r.phone || undefined,
+    avatarColor: r.avatarColor || '#10b981',
+    twoFactorEnabled: Boolean(r.twoFactorEnabled),
+    permissions: typeof r.permissions === 'string' ? JSON.parse(r.permissions) : (r.permissions || []),
+    lastLogin: r.lastLogin || undefined,
+    notes: r.notes || undefined,
+    createdAt: r.createdAt,
+  };
+}
+
+export function saveUser(user: User, rawPassword?: string): void {
+  const passwordHash = rawPassword ? hashPassword(rawPassword) : undefined;
+
   const stmt = db.prepare(`
     INSERT INTO users (
-      id, name, email, role, custom_role_name, status, department, phone,
+      id, name, email, password_hash, role, custom_role_name, status, department, phone,
       avatar_color, two_factor_enabled, permissions, last_login, notes, created_at
     )
     VALUES (
-      @id, @name, @email, @role, @customRoleName, @status, @department, @phone,
+      @id, @name, @email, @passwordHash, @role, @customRoleName, @status, @department, @phone,
       @avatarColor, @twoFactorEnabled, @permissions, @lastLogin, @notes, @createdAt
     )
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       email = excluded.email,
+      password_hash = COALESCE(excluded.password_hash, users.password_hash),
       role = excluded.role,
       custom_role_name = excluded.custom_role_name,
       status = excluded.status,
@@ -826,6 +929,7 @@ export function saveUser(user: User): void {
     id: user.id,
     name: user.name,
     email: user.email,
+    passwordHash: passwordHash || null,
     role: user.role,
     customRoleName: user.customRoleName || null,
     status: user.status,
@@ -840,12 +944,69 @@ export function saveUser(user: User): void {
   });
 }
 
+export function updateUserPassword(id: string, newPassword: string): void {
+  const hash = hashPassword(newPassword);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, id);
+}
+
+export function updateUserLastLogin(id: string): void {
+  db.prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?").run(id);
+}
+
 export function deleteUserById(id: string): void {
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
 }
 
 export function updateUserStatus(id: string, status: string): void {
   db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, id);
+  if (status !== 'active') {
+    deleteUserSessions(id);
+  }
+}
+
+// --- Session Operations (SQLite) ---
+export function createSession(userId: string, expiresInDays = 7): string {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare(`
+    INSERT INTO sessions (token, user_id, expires_at)
+    VALUES (?, ?, ?)
+  `).run(token, userId, expiresAt);
+  return token;
+}
+
+export function getSession(token: string): { userId: string; expiresAt: string } | null {
+  const row = db.prepare(`
+    SELECT user_id as userId, expires_at as expiresAt
+    FROM sessions
+    WHERE token = ?
+  `).get(token) as { userId: string; expiresAt: string } | undefined;
+
+  if (!row) return null;
+
+  if (new Date(row.expiresAt).getTime() < Date.now()) {
+    deleteSession(token);
+    return null;
+  }
+
+  return row;
+}
+
+export function deleteSession(token: string): void {
+  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+export function deleteUserSessions(userId: string): void {
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+}
+
+export function cleanupExpiredSessions(): void {
+  try {
+    db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
+  } catch (err) {
+    console.error('Error cleaning expired sessions:', err);
+  }
 }
 
 export function getAllAuditLogs(limit = 100): AuditLog[] {

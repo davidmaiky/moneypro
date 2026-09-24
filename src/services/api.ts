@@ -16,14 +16,44 @@ export interface BootstrapResponse {
   }[];
 }
 
+export const TOKEN_KEY = 'finanflow_auth_token';
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+}
+
+export function setAuthToken(token: string, rememberMe = true): void {
+  if (rememberMe) {
+    localStorage.setItem(TOKEN_KEY, token);
+    sessionStorage.removeItem(TOKEN_KEY);
+  } else {
+    sessionStorage.setItem(TOKEN_KEY, token);
+    localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+export function clearAuthToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const token = getAuthToken();
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+
   const res = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders,
       ...options?.headers,
     },
   });
+
+  if (res.status === 401 && !url.includes('/api/auth/login')) {
+    clearAuthToken();
+    window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+  }
 
   if (!res.ok) {
     const errorText = await res.text();
@@ -209,6 +239,46 @@ export const api = {
     return request('/api/users/invite', {
       method: 'POST',
       body: JSON.stringify({ email, role, department }),
+    });
+  },
+
+  // Auth Operations
+  async login(credentials: { email: string; password: string; rememberMe?: boolean }): Promise<{
+    success: boolean;
+    token: string;
+    user: User;
+  }> {
+    const data = await request<{ success: boolean; token: string; user: User }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(credentials),
+    });
+    if (data.token) {
+      setAuthToken(data.token, credentials.rememberMe ?? true);
+    }
+    return data;
+  },
+
+  async getMe(): Promise<{ success: boolean; user: User }> {
+    return request('/api/auth/me');
+  },
+
+  async logout(): Promise<{ success: boolean; message: string }> {
+    try {
+      const data = await request<{ success: boolean; message: string }>('/api/auth/logout', {
+        method: 'POST',
+      });
+      clearAuthToken();
+      return data;
+    } catch {
+      clearAuthToken();
+      return { success: true, message: 'Desconectado localmente' };
+    }
+  },
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+    return request('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
     });
   },
 };

@@ -15,9 +15,12 @@ import {
   Sun,
   Moon,
   X,
+  LogOut,
 } from 'lucide-react';
 import { useFinance } from '../../context/FinanceContext';
 import { useTheme } from '../../context/ThemeContext';
+import { useAuth } from '../../context/AuthContext';
+import { ROLE_DEFINITIONS } from '../../types/user';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 import { ActiveTab } from './Header';
 
@@ -46,6 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     togglePrivacyMode,
   } = useFinance();
   const { resolvedTheme, toggleTheme } = useTheme();
+  const { user, logout, hasPermission } = useAuth();
 
   const pendingRecurringCount = recurringTransactions.filter(
     r => r.active && (!r.generatedMonths || !r.generatedMonths.includes(selectedMonth))
@@ -145,6 +149,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           Navegação
         </div>
         {navItems.map(item => {
+          if (item.id === 'users' && !hasPermission('users:view')) {
+            return null;
+          }
           const Icon = item.icon;
           const isActive = activeTab === item.id;
           return (
@@ -270,6 +277,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
             )}
           </button>
         </div>
+
+        {/* Authenticated User Profile & Logout */}
+        {user && (
+          <div className="pt-2.5 mt-2 border-t border-slate-200/80 dark:border-slate-800/80 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-bold shrink-0 shadow-2xs"
+                style={{ backgroundColor: user.avatarColor || '#10b981' }}
+              >
+                {user.name.charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                  {user.name}
+                </div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                  {ROLE_DEFINITIONS[user.role]?.name || user.role}
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => logout()}
+              className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer shrink-0"
+              title="Sair do sistema (Logout)"
+              aria-label="Sair do sistema"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

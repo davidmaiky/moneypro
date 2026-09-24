@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import {
   getBootstrapData,
   saveAccount,
@@ -19,6 +19,13 @@ import {
   getAllAccounts,
   getAllUsers,
   getUserById,
+  getUserByEmail,
+  verifyPassword,
+  createSession,
+  getSession,
+  deleteSession,
+  updateUserPassword,
+  updateUserLastLogin,
   saveUser,
   deleteUserById,
   updateUserStatus,
@@ -31,7 +38,7 @@ import { PERMISSION_GROUPS, ROLE_DEFINITIONS, ALL_PERMISSION_IDS, User, UserRole
 
 export const apiRouter = Router();
 
-// Health check endpoint for Easypanel, Docker and status monitoring
+// Health check endpoint for Easypanel, Docker and status monitoring (Public)
 apiRouter.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({
     status: 'ok',
@@ -39,6 +46,150 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString()
   });
+});
+
+// --- Authentication Endpoints (Public Login) ---
+apiRouter.post('/auth/login', (req: Request, res: Response) => {
+  try {
+    const { email, password, rememberMe } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'E-mail e senha são obrigatórios' });
+    }
+
+    const userWithHash = getUserByEmail(email.trim());
+    if (!userWithHash || !userWithHash.passwordHash) {
+      return res.status(401).json({ error: 'Credenciais inválidas. Verifique seu e-mail e senha.' });
+    }
+
+    const isValid = verifyPassword(password, userWithHash.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Credenciais inválidas. Verifique seu e-mail e senha.' });
+    }
+
+    if (userWithHash.status !== 'active') {
+      return res.status(403).json({
+        error: userWithHash.status === 'pending'
+          ? 'Sua conta ainda está pendente de ativação pelo administrador.'
+          : 'Sua conta de usuário está desativada no sistema.'
+      });
+    }
+
+    // Update last login
+    updateUserLastLogin(userWithHash.id);
+
+    // Create session (30 days if rememberMe, else 7 days)
+    const token = createSession(userWithHash.id, rememberMe ? 30 : 7);
+
+    // Audit log
+    const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+    addAuditLog({
+      userId: userWithHash.id,
+      userName: userWithHash.name,
+      action: 'login',
+      target: userWithHash.email,
+      details: `Login efetuado com sucesso via formulário seguro (${userWithHash.role})`,
+      ipAddress: clientIp.toString().split(',')[0].trim(),
+    });
+
+    // Strip password hash from returned user object
+    const { passwordHash: _, ...safeUser } = userWithHash;
+
+    res.json({
+      success: true,
+      token,
+      user: safeUser,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro durante o processo de autenticação' });
+  }
+});
+
+// --- Authentication Middleware for Protected Routes ---
+apiRouter.use((req: Request, res: Response, next: NextFunction) => {
+  // Public routes
+  if (req.path === '/health' || req.path === '/auth/login') {
+    return next();
+  }
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
+  }
+
+  const token = authHeader.substring(7).trim();
+  const session = getSession(token);
+  if (!session) {
+    return res.status(401).json({ error: 'Sessão expirada ou inválida. Por favor, autentique-se novamente.' });
+  }
+
+  const user = getUserById(session.userId);
+  if (!user || user.status !== 'active') {
+    return res.status(403).json({ error: 'Acesso negado. Usuário inativo ou inexistente.' });
+  }
+
+  // Attach authenticated user to request
+  (req as any).user = user;
+  (req as any).authToken = token;
+  next();
+});
+
+// --- Protected Auth Endpoints ---
+apiRouter.get('/auth/me', (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    user: (req as any).user,
+  });
+});
+
+apiRouter.post('/auth/logout', (req: Request, res: Response) => {
+  try {
+    const token = (req as any).authToken;
+    if (token) {
+      deleteSession(token);
+    }
+    res.json({ success: true, message: 'Sessão encerrada com sucesso' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao realizar logout' });
+  }
+});
+
+apiRouter.post('/auth/change-password', (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user as User;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Senha atual e nova senha são obrigatórias' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'A nova senha deve possuir no mínimo 6 caracteres' });
+    }
+
+    const userWithHash = getUserByEmail(user.email);
+    if (!userWithHash || !userWithHash.passwordHash) {
+      return res.status(400).json({ error: 'Erro ao verificar cadastro do usuário' });
+    }
+
+    if (!verifyPassword(currentPassword, userWithHash.passwordHash)) {
+      return res.status(400).json({ error: 'A senha atual informada está incorreta' });
+    }
+
+    updateUserPassword(user.id, newPassword);
+
+    addAuditLog({
+      userId: user.id,
+      userName: user.name,
+      action: 'update',
+      target: user.email,
+      details: 'Senha do usuário alterada com sucesso pelo próprio usuário',
+    });
+
+    res.json({ success: true, message: 'Senha atualizada com sucesso!' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Erro ao atualizar senha' });
+  }
 });
 
 // 1. Bootstrap
@@ -313,12 +464,14 @@ apiRouter.post('/users', (req: Request, res: Response) => {
       notes: body.notes?.trim() || undefined,
     };
 
-    saveUser(user);
+    const rawPassword = (body as any).password as string | undefined;
+    saveUser(user, rawPassword || (isNew ? 'senha123' : undefined));
 
     // Audit log
+    const actorName = (req as any).user?.name || 'Administrador';
     addAuditLog({
-      userId: user.id,
-      userName: 'Administrador',
+      userId: (req as any).user?.id || user.id,
+      userName: actorName,
       action: isNew ? 'create' : 'update',
       target: user.name,
       details: isNew

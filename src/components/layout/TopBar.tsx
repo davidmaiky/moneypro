@@ -6,8 +6,10 @@ import {
   Eye,
   EyeOff,
   Database,
+  LogOut,
 } from 'lucide-react';
 import { useFinance } from '../../context/FinanceContext';
+import { useAuth } from '../../context/AuthContext';
 import { ActiveTab } from './Header';
 
 interface TopBarProps {
@@ -65,6 +67,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     togglePrivacyMode,
     isDbConnected,
   } = useFinance();
+  const { user, logout } = useAuth();
 
   const pageInfo = TAB_TITLES[activeTab] || {
     title: 'Money Pro',
@@ -173,6 +176,28 @@ export const TopBar: React.FC<TopBarProps> = ({
                 N
               </kbd>
             </button>
+
+            {/* User Profile & Logout on TopBar */}
+            {user && (
+              <div className="flex items-center gap-1.5 pl-1.5 sm:pl-2 border-l border-slate-200 dark:border-slate-800">
+                <div
+                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 shadow-2xs cursor-default"
+                  style={{ backgroundColor: user.avatarColor || '#10b981' }}
+                  title={`${user.name} (${user.email})`}
+                >
+                  {user.name.charAt(0).toUpperCase()}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => logout()}
+                  className="p-1.5 sm:p-2 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
+                  title="Sair do sistema (Logout)"
+                  aria-label="Sair do sistema"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

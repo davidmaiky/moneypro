@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { FinanceProvider, useFinance } from './context/FinanceContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { LoginPage } from './components/auth/LoginPage';
 import { ActiveTab } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar';
@@ -460,10 +462,40 @@ function MainApp() {
   );
 }
 
-export default function App() {
+function AuthenticatedApp() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
+        <div className="relative mb-4">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center text-white font-bold text-2xl shadow-xl shadow-emerald-500/25 animate-pulse">
+            M
+          </div>
+        </div>
+        <div className="flex items-center gap-2.5 text-xs font-semibold text-slate-600 dark:text-slate-400">
+          <div className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          <span>Carregando ambiente seguro FinanFlow Pro...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
   return (
     <FinanceProvider>
       <MainApp />
     </FinanceProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AuthenticatedApp />
+    </AuthProvider>
   );
 }
