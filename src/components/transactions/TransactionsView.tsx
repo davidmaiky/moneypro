@@ -10,6 +10,9 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   Layers,
   Repeat,
   Download,
@@ -23,13 +26,34 @@ import {
   Square,
   X,
   AlertTriangle,
+  RotateCcw,
+  SlidersHorizontal,
+  CalendarDays,
+  DollarSign,
 } from 'lucide-react';
 import { useFinance } from '../../context/FinanceContext';
 import { PaymentMethod, Transaction, TransactionType } from '../../types/finance';
-import { formatCurrency, formatDate, formatMonthYear, getTodayDateString } from '../../utils/formatters';
+import {
+  formatCurrency,
+  formatDate,
+  formatMonthYear,
+  formatMonthShort,
+  getTodayDateString,
+  getCurrentMonthString,
+  addMonthsToMonthString,
+} from '../../utils/formatters';
 import { exportTransactionsToCSV } from '../../utils/exportUtils';
 import { TransactionModal } from '../modals/TransactionModal';
 import { TransactionDetailsModal } from './TransactionDetailsModal';
+
+function getSubtractedDateString(daysAgo: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 interface TransactionsViewProps {
   onOpenNewTransaction: () => void;
@@ -48,6 +72,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
     cards,
     categories,
     selectedMonth,
+    setSelectedMonth,
     deleteTransaction,
     deleteTransactionsBatch,
     updateTransaction,
@@ -60,8 +85,99 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all'); // accountId or cardId
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'pending'>('all');
-  const [monthScope, setMonthScope] = useState<'selected' | 'all'>('selected');
   const [sortBy, setSortBy] = useState<SortOption>('date_desc');
+
+  // Enhanced Period & Advanced Filters state
+  const [periodMode, setPeriodMode] = useState<'month' | 'range' | 'all'>('month');
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
+  const [minAmount, setMinAmount] = useState<string>('');
+  const [maxAmount, setMaxAmount] = useState<string>('');
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState<boolean>(false);
+
+  const currentActualMonth = useMemo(() => getCurrentMonthString(), []);
+  const previousMonthStr = useMemo(() => addMonthsToMonthString(currentActualMonth, -1), [currentActualMonth]);
+  const nextMonthStr = useMemo(() => addMonthsToMonthString(currentActualMonth, 1), [currentActualMonth]);
+
+  // Steppers for month mode
+  const handlePrevMonth = () => {
+    setSelectedMonth(addMonthsToMonthString(selectedMonth, -1));
+  };
+
+  const handleNextMonth = () => {
+    setSelectedMonth(addMonthsToMonthString(selectedMonth, 1));
+  };
+
+  const handleSetCurrentMonth = () => {
+    setSelectedMonth(currentActualMonth);
+  };
+
+  // Preset button action
+  const handleApplyPreset = (preset: '7d' | '15d' | '30d' | '90d' | 'year' | 'last_month' | 'this_month' | 'next_month' | 'all') => {
+    if (preset === '7d') {
+      setPeriodMode('range');
+      setStartDate(getSubtractedDateString(7));
+      setEndDate(getTodayDateString());
+    } else if (preset === '15d') {
+      setPeriodMode('range');
+      setStartDate(getSubtractedDateString(15));
+      setEndDate(getTodayDateString());
+    } else if (preset === '30d') {
+      setPeriodMode('range');
+      setStartDate(getSubtractedDateString(30));
+      setEndDate(getTodayDateString());
+    } else if (preset === '90d') {
+      setPeriodMode('range');
+      setStartDate(getSubtractedDateString(90));
+      setEndDate(getTodayDateString());
+    } else if (preset === 'year') {
+      setPeriodMode('range');
+      setStartDate(`${new Date().getFullYear()}-01-01`);
+      setEndDate(getTodayDateString());
+    } else if (preset === 'last_month') {
+      setPeriodMode('month');
+      setSelectedMonth(previousMonthStr);
+    } else if (preset === 'this_month') {
+      setPeriodMode('month');
+      setSelectedMonth(currentActualMonth);
+    } else if (preset === 'next_month') {
+      setPeriodMode('month');
+      setSelectedMonth(nextMonthStr);
+    } else if (preset === 'all') {
+      setPeriodMode('all');
+    }
+  };
+
+  // Count active filters
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (searchTerm.trim()) count++;
+    if (periodMode === 'range') count++;
+    if (periodMode === 'month' && selectedMonth !== currentActualMonth) count++;
+    if (periodMode === 'all') count++;
+    if (typeFilter !== 'all') count++;
+    if (categoryFilter !== 'all') count++;
+    if (sourceFilter !== 'all') count++;
+    if (statusFilter !== 'all') count++;
+    if (minAmount.trim() !== '') count++;
+    if (maxAmount.trim() !== '') count++;
+    return count;
+  }, [searchTerm, periodMode, selectedMonth, currentActualMonth, typeFilter, categoryFilter, sourceFilter, statusFilter, minAmount, maxAmount]);
+
+  const handleClearAllFilters = () => {
+    setSearchTerm('');
+    setPeriodMode('month');
+    setSelectedMonth(currentActualMonth);
+    setStartDate('');
+    setEndDate('');
+    setTypeFilter('all');
+    setCategoryFilter('all');
+    setSourceFilter('all');
+    setStatusFilter('all');
+    setMinAmount('');
+    setMaxAmount('');
+    setSortBy('date_desc');
+  };
 
   // Multi-selection state
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -76,14 +192,18 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   const filteredTransactions = useMemo(() => {
     return transactions
       .filter(t => {
-        // Month filter
-        if (monthScope === 'selected') {
+        // Period filter
+        if (periodMode === 'month') {
           if (t.paymentMethod === 'credit_card') {
             if (t.invoiceMonth !== selectedMonth) return false;
           } else {
             if (!t.date.startsWith(selectedMonth)) return false;
           }
+        } else if (periodMode === 'range') {
+          if (startDate && t.date < startDate) return false;
+          if (endDate && t.date > endDate) return false;
         }
+        // If 'all', pass through without date filter
 
         // Type filter
         if (typeFilter === 'income' && t.type !== 'income') return false;
@@ -104,6 +224,16 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
           } else {
             if (t.accountId !== sourceFilter) return false;
           }
+        }
+
+        // Amount min / max
+        if (minAmount.trim() !== '') {
+          const min = parseFloat(minAmount);
+          if (!isNaN(min) && t.amount < min) return false;
+        }
+        if (maxAmount.trim() !== '') {
+          const max = parseFloat(maxAmount);
+          if (!isNaN(max) && t.amount > max) return false;
         }
 
         // Search term
@@ -129,12 +259,16 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
       });
   }, [
     transactions,
-    monthScope,
+    periodMode,
     selectedMonth,
+    startDate,
+    endDate,
     typeFilter,
     statusFilter,
     categoryFilter,
     sourceFilter,
+    minAmount,
+    maxAmount,
     searchTerm,
     categories,
     sortBy,
@@ -146,19 +280,23 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
       .filter(t => t.type === 'income')
       .reduce((sum, t) => sum + t.amount, 0);
 
-    const totalExpense = filteredTransactions
-      .filter(t => t.type === 'expense')
+    const directExpense = filteredTransactions
+      .filter(t => t.type === 'expense' && t.paymentMethod === 'account')
       .reduce((sum, t) => sum + t.amount, 0);
 
     const cardExpenses = filteredTransactions
       .filter(t => t.type === 'expense' && t.paymentMethod === 'credit_card')
       .reduce((sum, t) => sum + t.amount, 0);
 
+    const totalExpense = directExpense + cardExpenses;
+    const net = totalIncome - totalExpense;
+
     return {
       income: totalIncome,
-      expense: totalExpense,
+      directExpense,
       card: cardExpenses,
-      net: totalIncome - totalExpense,
+      expense: totalExpense,
+      net,
       count: filteredTransactions.length,
     };
   }, [filteredTransactions]);
@@ -251,22 +389,33 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   // Export to CSV
   const handleExportCSV = (exportOnlySelected = false) => {
     const listToExport = exportOnlySelected ? selectedTransactions : filteredTransactions;
-    const filename = `extrato-${monthScope === 'selected' ? selectedMonth : 'geral'}.csv`;
+    let suffix = 'geral';
+    if (periodMode === 'month') suffix = selectedMonth;
+    else if (periodMode === 'range') suffix = `${startDate || 'inicio'}_${endDate || 'fim'}`;
+    const filename = `extrato-${suffix}.csv`;
     exportTransactionsToCSV(listToExport, categories, accounts, cards, filename);
   };
 
   return (
     <div className="space-y-4 relative pb-20">
       {/* Top Controls & Extrato Toolbar */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4.5 space-y-4 shadow-xs transition-colors">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4 shadow-xs transition-colors">
+        {/* Header Row */}
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-base font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-              <span>Lançamentos & Extrato</span>
-              <span className="text-xs font-mono font-normal text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">
-                {stats.count} registros
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                <span>Lançamentos & Extrato</span>
+              </h1>
+              <span className="text-xs font-mono font-normal text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2.5 py-0.5 rounded-full border border-slate-200 dark:border-slate-700/60">
+                {stats.count} {stats.count === 1 ? 'registro' : 'registros'}
+                {stats.count !== transactions.length && (
+                  <span className="text-slate-400 dark:text-slate-500 ml-1">
+                    (de {transactions.length})
+                  </span>
+                )}
               </span>
-            </h1>
+            </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Visualize, adicione, edite, gerencie e exporte o extrato financeiro completo
             </p>
@@ -275,7 +424,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <button
               onClick={() => handleExportCSV(false)}
-              className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-lg transition-colors border border-slate-200/80 dark:border-slate-700 cursor-pointer flex-1 sm:flex-initial"
+              className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl transition-colors border border-slate-200/80 dark:border-slate-700 cursor-pointer flex-1 sm:flex-initial"
               title="Exportar lançamentos filtrados para arquivo CSV (Excel)"
             >
               <Download className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
@@ -284,7 +433,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
 
             <button
               onClick={onOpenNewTransaction}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-900 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-all shadow-xs cursor-pointer active:scale-98 flex-1 sm:flex-initial"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-900 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-all shadow-xs cursor-pointer active:scale-98 flex-1 sm:flex-initial"
             >
               <Plus className="w-4 h-4 stroke-[2.5]" />
               <span>Novo Lançamento</span>
@@ -292,8 +441,205 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
           </div>
         </div>
 
+        {/* PERIOD SELECTOR ROW */}
+        <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-3">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            {/* Period Mode Selector Tabs */}
+            <div className="flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700/80 shadow-2xs w-fit">
+              <button
+                type="button"
+                onClick={() => setPeriodMode('month')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                  periodMode === 'month'
+                    ? 'bg-emerald-50 text-emerald-700 dark:bg-slate-800 dark:text-emerald-400 font-semibold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5 text-emerald-500" />
+                <span>Mês Específico</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setPeriodMode('range');
+                  if (!startDate) setStartDate(getSubtractedDateString(30));
+                  if (!endDate) setEndDate(getTodayDateString());
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                  periodMode === 'range'
+                    ? 'bg-emerald-50 text-emerald-700 dark:bg-slate-800 dark:text-emerald-400 font-semibold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <CalendarDays className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Intervalo de Datas</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPeriodMode('all')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                  periodMode === 'all'
+                    ? 'bg-emerald-50 text-emerald-700 dark:bg-slate-800 dark:text-emerald-400 font-semibold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5 text-purple-500" />
+                <span>Todo o Histórico</span>
+              </button>
+            </div>
+
+            {/* Sub-controls according to active mode */}
+            {periodMode === 'month' && (
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Stepper with Native Month Picker Overlay */}
+                <div className="inline-flex items-center bg-white dark:bg-slate-900 rounded-xl p-1 border border-slate-200 dark:border-slate-700 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={handlePrevMonth}
+                    aria-label="Mês anterior"
+                    className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-lg transition-colors cursor-pointer"
+                    title="Mês anterior"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+
+                  <div className="relative flex items-center px-2">
+                    <input
+                      type="month"
+                      value={selectedMonth}
+                      onChange={e => e.target.value && setSelectedMonth(e.target.value)}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
+                      title="Clique para selecionar mês e ano"
+                    />
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200 select-none py-1">
+                      <span className="capitalize">{formatMonthYear(selectedMonth)}</span>
+                      <Calendar className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400 ml-0.5" />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleNextMonth}
+                    aria-label="Próximo mês"
+                    className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-lg transition-colors cursor-pointer"
+                    title="Próximo mês"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Quick Month Presets */}
+                <div className="inline-flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset('last_month')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                      selectedMonth === previousMonthStr
+                        ? 'bg-emerald-50 text-emerald-600 dark:bg-slate-800 dark:text-emerald-400'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Mês Passado
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset('this_month')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                      selectedMonth === currentActualMonth
+                        ? 'bg-emerald-50 text-emerald-600 dark:bg-slate-800 dark:text-emerald-400'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Mês Atual
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset('next_month')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                      selectedMonth === nextMonthStr
+                        ? 'bg-emerald-50 text-emerald-600 dark:bg-slate-800 dark:text-emerald-400'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Próximo Mês
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {periodMode === 'range' && (
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5 bg-white dark:bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs">
+                  <span className="text-slate-400 font-medium">De:</span>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={e => setStartDate(e.target.value)}
+                    className="bg-transparent text-slate-800 dark:text-slate-200 text-xs focus:outline-hidden"
+                  />
+                  <span className="text-slate-400 font-medium ml-1">Até:</span>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={e => setEndDate(e.target.value)}
+                    className="bg-transparent text-slate-800 dark:text-slate-200 text-xs focus:outline-hidden"
+                  />
+                </div>
+
+                {/* Range Presets */}
+                <div className="inline-flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset('7d')}
+                    className="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    7D
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset('15d')}
+                    className="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    15D
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset('30d')}
+                    className="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    30D
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset('90d')}
+                    className="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    90D
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset('year')}
+                    className="px-2 py-1 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    Este Ano
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {periodMode === 'all' && (
+              <div className="text-xs text-purple-600 dark:text-purple-400 font-medium flex items-center gap-1.5 py-1">
+                <Layers className="w-3.5 h-3.5" />
+                <span>Exibindo todo o histórico completo de lançamentos</span>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Filter Toolbar Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-1">
           {/* Search Input */}
           <div className="relative sm:col-span-2 lg:col-span-2">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
@@ -304,12 +650,12 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
               placeholder="Buscar por descrição, anotação ou valor..."
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg pl-9 pr-7 py-1.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-hidden focus:border-emerald-500"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-9 pr-7 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-hidden focus:border-emerald-500"
             />
             {searchTerm && (
               <button
                 onClick={() => setSearchTerm('')}
-                className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -321,7 +667,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
             <select
               value={typeFilter}
               onChange={e => setTypeFilter(e.target.value as any)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500 cursor-pointer"
             >
               <option value="all">Todos os Tipos</option>
               <option value="income">Apenas Receitas</option>
@@ -336,7 +682,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
             <select
               value={categoryFilter}
               onChange={e => setCategoryFilter(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500 cursor-pointer"
             >
               <option value="all">Todas Categorias</option>
               {categories.map(c => (
@@ -352,7 +698,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
             <select
               value={sourceFilter}
               onChange={e => setSourceFilter(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500 cursor-pointer"
             >
               <option value="all">Todas as Origens</option>
               <optgroup label="Contas Bancárias">
@@ -372,90 +718,231 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
             </select>
           </div>
 
-          {/* Month Scope Toggle */}
+          {/* Advanced Filters Button Toggle */}
           <div>
-            <select
-              value={monthScope}
-              onChange={e => setMonthScope(e.target.value as any)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500"
+            <button
+              type="button"
+              onClick={() => setShowAdvancedFilters(prev => !prev)}
+              className={`w-full flex items-center justify-between gap-1.5 px-3 py-2 rounded-xl border text-xs font-medium transition-colors cursor-pointer ${
+                showAdvancedFilters || minAmount || maxAmount
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-800 dark:text-emerald-300'
+                  : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-750'
+              }`}
             >
-              <option value="selected">Mês Atual ({formatMonthYear(selectedMonth).slice(0, 7)})</option>
-              <option value="all">Todo o Histórico</option>
-            </select>
+              <span className="flex items-center gap-1.5">
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span>Mais Filtros</span>
+                {(minAmount || maxAmount) && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                )}
+              </span>
+              {showAdvancedFilters ? (
+                <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+              )}
+            </button>
           </div>
         </div>
 
-        {/* Secondary Filter Row: Status & Sorting */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800/80 text-xs">
-          <div className="flex items-center gap-3">
-            <span className="text-slate-400 text-[11px] font-medium uppercase tracking-wider">Situação:</span>
-            <div className="inline-flex rounded-lg p-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-              <button
-                type="button"
-                onClick={() => setStatusFilter('all')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
-                  statusFilter === 'all'
-                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                }`}
+        {/* ADVANCED FILTERS PANEL (COLLAPSIBLE) */}
+        {showAdvancedFilters && (
+          <div className="p-3 bg-slate-50/80 dark:bg-slate-800/40 rounded-xl border border-slate-200/60 dark:border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div>
+              <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                Valor Mínimo (R$)
+              </label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-2 text-slate-400 font-mono">R$</span>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="0,00"
+                  value={minAmount}
+                  onChange={e => setMinAmount(e.target.value)}
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500 font-mono"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                Valor Máximo (R$)
+              </label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-2 text-slate-400 font-mono">R$</span>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="Sem limite"
+                  value={maxAmount}
+                  onChange={e => setMaxAmount(e.target.value)}
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500 font-mono"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                Situação do Lançamento
+              </label>
+              <select
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value as any)}
+                className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500 cursor-pointer"
               >
-                Todos
-              </button>
-              <button
-                type="button"
-                onClick={() => setStatusFilter('completed')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
-                  statusFilter === 'completed'
-                    ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                }`}
+                <option value="all">Todas as Situações</option>
+                <option value="completed">Apenas Concluídos</option>
+                <option value="pending">Apenas Pendentes</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                Ordenação dos Registros
+              </label>
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as SortOption)}
+                className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-emerald-500 cursor-pointer"
               >
-                Concluídos
-              </button>
-              <button
-                type="button"
-                onClick={() => setStatusFilter('pending')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
-                  statusFilter === 'pending'
-                    ? 'bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                }`}
-              >
-                Pendentes
-              </button>
+                <option value="date_desc">Data (Mais recentes)</option>
+                <option value="date_asc">Data (Mais antigos)</option>
+                <option value="amount_desc">Valor (Maior)</option>
+                <option value="amount_asc">Valor (Menor)</option>
+                <option value="description_asc">Descrição (A-Z)</option>
+              </select>
             </div>
           </div>
+        )}
 
-          <div className="flex items-center gap-2">
-            <span className="text-slate-400 text-[11px] font-medium flex items-center gap-1">
-              <ArrowUpDown className="w-3 h-3" />
-              Ordenar por:
-            </span>
-            <select
-              value={sortBy}
-              onChange={e => setSortBy(e.target.value as SortOption)}
-              className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-700 dark:text-slate-300 focus:outline-hidden focus:border-emerald-500"
+        {/* ACTIVE FILTERS CHIPS ROW */}
+        {activeFiltersCount > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-slate-400 text-[11px] font-medium mr-1 flex items-center gap-1">
+                <Filter className="w-3 h-3 text-emerald-500" />
+                Filtros ativos ({activeFiltersCount}):
+              </span>
+
+              {searchTerm.trim() && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px]">
+                  <span>Busca: "{searchTerm}"</span>
+                  <button onClick={() => setSearchTerm('')} className="cursor-pointer hover:text-emerald-900 dark:hover:text-white">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {periodMode === 'month' && selectedMonth !== currentActualMonth && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-[11px] capitalize">
+                  <span>Mês: {formatMonthYear(selectedMonth)}</span>
+                  <button onClick={() => setSelectedMonth(currentActualMonth)} className="cursor-pointer hover:text-blue-900 dark:hover:text-white">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {periodMode === 'range' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-[11px]">
+                  <span>Período: {formatDate(startDate)} a {formatDate(endDate)}</span>
+                  <button onClick={() => { setPeriodMode('month'); setStartDate(''); setEndDate(''); }} className="cursor-pointer hover:text-indigo-900 dark:hover:text-white">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {typeFilter !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-purple-50 text-purple-700 dark:bg-purple-950/50 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-[11px]">
+                  <span>
+                    Tipo:{' '}
+                    {typeFilter === 'income'
+                      ? 'Receitas'
+                      : typeFilter === 'expense'
+                      ? 'Despesas'
+                      : typeFilter === 'credit_card'
+                      ? 'Cartão'
+                      : 'Recorrentes'}
+                  </span>
+                  <button onClick={() => setTypeFilter('all')} className="cursor-pointer hover:text-purple-900 dark:hover:text-white">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {categoryFilter !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-[11px]">
+                  <span>Cat: {categories.find(c => c.id === categoryFilter)?.name}</span>
+                  <button onClick={() => setCategoryFilter('all')} className="cursor-pointer hover:text-slate-900 dark:hover:text-white">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {sourceFilter !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-[11px]">
+                  <span>
+                    Origem:{' '}
+                    {accounts.find(a => a.id === sourceFilter)?.name ||
+                      cards.find(c => c.id === sourceFilter)?.name}
+                  </span>
+                  <button onClick={() => setSourceFilter('all')} className="cursor-pointer hover:text-slate-900 dark:hover:text-white">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {statusFilter !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 border border-amber-200 dark:border-amber-800 text-[11px]">
+                  <span>Status: {statusFilter === 'completed' ? 'Concluído' : 'Pendente'}</span>
+                  <button onClick={() => setStatusFilter('all')} className="cursor-pointer hover:text-amber-900 dark:hover:text-white">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {(minAmount || maxAmount) && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px] font-mono">
+                  <span>
+                    Valor:{' '}
+                    {minAmount && maxAmount
+                      ? `R$ ${minAmount} a ${maxAmount}`
+                      : minAmount
+                      ? `>= R$ ${minAmount}`
+                      : `<= R$ ${maxAmount}`}
+                  </span>
+                  <button onClick={() => { setMinAmount(''); setMaxAmount(''); }} className="cursor-pointer hover:text-emerald-900 dark:hover:text-white">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={handleClearAllFilters}
+              className="inline-flex items-center gap-1 text-[11px] text-rose-600 dark:text-rose-400 hover:underline font-medium cursor-pointer"
             >
-              <option value="date_desc">Data (Mais recentes)</option>
-              <option value="date_asc">Data (Mais antigos)</option>
-              <option value="amount_desc">Valor (Maior)</option>
-              <option value="amount_asc">Valor (Menor)</option>
-              <option value="description_asc">Descrição (A-Z)</option>
-            </select>
+              <RotateCcw className="w-3 h-3" />
+              <span>Limpar todos os filtros</span>
+            </button>
           </div>
-        </div>
+        )}
 
         {/* Filter Summary Banner */}
-        <div className="flex flex-wrap items-center justify-between gap-4 p-2.5 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800 text-xs font-mono">
+        <div className="flex flex-wrap items-center justify-between gap-4 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-800 text-xs font-mono">
           <div className="flex flex-wrap items-center gap-4 text-slate-600 dark:text-slate-400">
             <span>
               Receitas: <strong className="text-emerald-600 dark:text-emerald-400">+{formatCurrency(stats.income)}</strong>
             </span>
             <span>
-              Despesas: <strong className="text-rose-600 dark:text-rose-400">-{formatCurrency(stats.expense)}</strong>
+              Despesas em Conta: <strong className="text-rose-600 dark:text-rose-400">-{formatCurrency(stats.directExpense)}</strong>
             </span>
             <span>
-              (Cartão: <strong className="text-purple-600 dark:text-purple-400">{formatCurrency(stats.card)}</strong>)
+              Fatura Cartão: <strong className="text-purple-600 dark:text-purple-400">{formatCurrency(stats.card)}</strong>
+            </span>
+            <span>
+              Total Despesas: <strong className="text-rose-600 dark:text-rose-400">-{formatCurrency(stats.expense)}</strong>
             </span>
           </div>
 
