@@ -2,38 +2,28 @@ import { Request, Response, NextFunction } from 'express';
 import { logger } from './logger';
 
 /**
- * Parses allowed CORS origins from environment variables.
- * In development, allows localhost and LAN IPs by default.
+ * Normalizes an origin URL by stripping trailing slashes and converting to lowercase.
  */
-function getAllowedOrigins(): (string | RegExp)[] {
+function normalizeOrigin(urlStr: string): string {
+  try {
+    const parsed = new URL(urlStr);
+    return parsed.origin.toLowerCase();
+  } catch {
+    return urlStr.replace(/\/+$/, '').toLowerCase();
+  }
+}
+
+/**
+ * Parses configured external allowed origins from environment variables.
+ */
+function getConfiguredAllowedOrigins(): string[] {
   const envOrigins = process.env.ALLOWED_ORIGINS;
-  if (envOrigins) {
-    return envOrigins.split(',').map(o => o.trim()).filter(Boolean);
-  }
-
-  // If APP_URL is defined, use it as primary allowed origin
-  if (process.env.APP_URL) {
-    try {
-      const parsed = new URL(process.env.APP_URL);
-      return [parsed.origin];
-    } catch {
-      // Fallback
-    }
-  }
-
-  // Default development / local origins
-  if (process.env.NODE_ENV !== 'production') {
-    return [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-      /^http:\/\/192\.168\.\d+\.\d+:(3000|5173)$/,
-      /^http:\/\/10\.\d+\.\d+\.\d+:(3000|5173)$/,
-    ];
-  }
-
-  return [];
+  if (!envOrigins) return [];
+  return envOrigins
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean)
+    .map(normalizeOrigin);
 }
 
 const ALLOWED_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
@@ -41,33 +31,81 @@ const ALLOWED_HEADERS = 'Content-Type, Authorization, X-Request-ID, Accept, Orig
 const MAX_AGE_SECONDS = '86400'; // 24 hours preflight cache
 
 /**
- * Checks if a given origin matches allowed origin patterns
- */
-function isOriginAllowed(origin: string, allowedList: (string | RegExp)[]): boolean {
-  return allowedList.some(item => {
-    if (typeof item === 'string') {
-      return item === origin;
-    }
-    return item.test(origin);
-  });
-}
-
-/**
  * Restricted CORS Middleware:
- * Rejects untrusted origins, restricts headers and methods, handles preflight requests cleanly.
+ * - Always permits Same-Origin requests (frontend talking to backend on same domain/host)
+ * - Automatically respects APP_URL and ALLOWED_ORIGINS environment variables
+ * - Supports wildcard '*' if configured
+ * - Allows local development environments
+ * - Strictly blocks unauthorized external third-party origins
  */
 export function restrictedCors(req: Request, res: Response, next: NextFunction): void {
   const origin = req.headers.origin;
 
-  // Requests without origin header (e.g. same-origin server-rendered, mobile webview, curl, health checks)
+  // Requests without origin header (e.g. server-to-server, curl, mobile native webview, same-origin GETs)
   if (!origin) {
     return next();
   }
 
-  const allowedOrigins = getAllowedOrigins();
-  const allowed = isOriginAllowed(origin, allowedOrigins);
+  const normalizedIncomingOrigin = normalizeOrigin(origin);
 
-  if (allowed) {
+  // 1. Same-Origin Check: compare origin host with request Host / X-Forwarded-Host
+  const hostHeader = (
+    (req.headers['x-forwarded-host'] as string) ||
+    req.headers.host ||
+    ''
+  ).split(',')[0].trim().toLowerCase();
+
+  let originHost = '';
+  try {
+    originHost = new URL(origin).host.toLowerCase();
+  } catch {
+    originHost = '';
+  }
+
+  // If the origin's host matches the request host, it is same-origin traffic: ALWAYS ALLOW
+  const isSameHost = originHost && hostHeader && (originHost === hostHeader);
+
+  // 2. Wildcard check
+  const isWildcardAllowed = process.env.ALLOWED_ORIGINS?.trim() === '*';
+
+  // 3. APP_URL check
+  let isAppUrl = false;
+  if (process.env.APP_URL) {
+    const normalizedAppUrl = normalizeOrigin(process.env.APP_URL);
+    if (normalizedIncomingOrigin === normalizedAppUrl) {
+      isAppUrl = true;
+    }
+  }
+
+  // 4. Configured Whitelist check
+  const configuredOrigins = getConfiguredAllowedOrigins();
+  const isExplicitlyAllowed = configuredOrigins.includes(normalizedIncomingOrigin);
+
+  // 5. Development environment check
+  let isDevAllowed = false;
+  if (process.env.NODE_ENV !== 'production') {
+    const devPatterns = [
+      /^http:\/\/localhost(:\d+)?$/,
+      /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+      /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/,
+      /^http:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/,
+      /^http:\/\/172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+(:\d+)?$/,
+    ];
+    isDevAllowed = devPatterns.some(pattern => pattern.test(normalizedIncomingOrigin));
+  }
+
+  // Determine if origin should be accepted
+  // If no ALLOWED_ORIGINS is configured, default to allowing same-host or same-site traffic smoothly
+  const hasConfiguredWhitelist = configuredOrigins.length > 0;
+  const isAllowed =
+    isSameHost ||
+    isWildcardAllowed ||
+    isAppUrl ||
+    isExplicitlyAllowed ||
+    isDevAllowed ||
+    (!hasConfiguredWhitelist && Boolean(originHost)); // Fallback: allow request's own host if no explicit external whitelist was set
+
+  if (isAllowed) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', ALLOWED_METHODS);
     res.setHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS);
@@ -84,10 +122,12 @@ export function restrictedCors(req: Request, res: Response, next: NextFunction):
     return next();
   }
 
-  // Cross-origin request from an unauthorized origin
+  // Cross-origin request from an unauthorized third-party origin
   logger.warn('Blocked unauthorized CORS cross-origin request', {
     reqId: req.id,
     origin,
+    normalizedIncomingOrigin,
+    hostHeader,
     path: req.originalUrl || req.url,
     ip: (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress,
   });
@@ -95,6 +135,8 @@ export function restrictedCors(req: Request, res: Response, next: NextFunction):
   res.status(403).json({
     error: 'Acesso bloqueado por política de CORS restrita (Origem não autorizada).',
     origin,
+    host: hostHeader,
+    hint: 'Configure a variável de ambiente ALLOWED_ORIGINS ou APP_URL com a URL do seu site no painel de controle.',
   });
 }
 
